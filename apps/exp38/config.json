@@ -1,0 +1,23 @@
+{
+    "name": "exp",
+    "seed": 42,
+    "epochs": 5,
+    "dataset": "temp_dataset",
+    "augmentation": "BaseAugmentation",
+    "resize": [
+        512,
+        512
+    ],
+    "batch_size": 10,
+    "valid_batch_size": 64,
+    "model": "Resnet",
+    "optimizer": "Adam",
+    "log_interval": 5,
+    "lr": 0.001,
+    "val_ratio": 0.2,
+    "criterion": "CustomLoss_joint",
+    "lr_decay_step": 20,
+    "data_dir": "F:\\ego_cam_dataset",
+    "model_dir": "C:\\Users\\user\\Documents\\GitHub\\2D_to_3D_ver3\\apps",
+    "smpl_dir": "D:\\SMPL\\SMPL_python_v.1.0.0\\smpl\\models"
+}
