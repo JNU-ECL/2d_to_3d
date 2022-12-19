@@ -13,8 +13,8 @@ class Resnet(nn.Module):
 
     def forward(self, x):
         # x = F.relu(self.conv2d(x))
-        x = F.relu(self.resnet(x))
-        x = torch.sigmoid(self.fc(x))
+        x = F.tanh(self.resnet(x))
+        x = F.tanh(self.fc(x))
         return x
 
 
