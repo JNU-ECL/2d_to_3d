@@ -31,14 +31,9 @@ class CustomLoss_joint(nn.Module):
                          num_expression_coeffs=num_expression_coeffs,
                          ext=ext)
         self.loss=nn.MSELoss()
+        self.cos=nn.CosineSimilarity()
 
-    def forward(self, input_tensor, target_tensor):
-        """
-        input_tensor.shape
-        torch.Size([10, 82])
-        target_joints.shape
-        torch.Size([10, 3, 65])
-        """
+    def joint_MSE(self, input_tensor, target_tensor):
         batch_size=input_tensor.shape[0]
         pred_tensor=[]
         custom_target_tensor=[]
@@ -58,7 +53,41 @@ class CustomLoss_joint(nn.Module):
 
         pred_tensor=torch.stack(pred_tensor,0)
         custom_target_tensor=torch.stack(custom_target_tensor,0).to('cpu')
-        return self.loss(pred_tensor,custom_target_tensor)
+        return self.loss(pred_tensor,custom_target_tensor),pred_tensor,custom_target_tensor
+
+    def find_p_vec(self,ktree,idx,joint,x,y,z):
+        if ktree[idx]==-1:
+            return x,y,z
+        temp_j=(x,y,z)-joint[ktree[idx]]
+        self.find_p_vec(ktree,ktree[idx],joint,*temp_j)
+
+    def cosine_similarity(self, pred_joints,target_joints):
+        # error=0
+        # pred_list=[]
+        # target_list=[]
+        # ktree=[-1,  0,  0,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  9,  9, 12, 13,
+        #         14, 16, 17, 18, 19, 15, 15, 15, 20, 25, 26, 20, 28, 29, 20, 31, 32,
+        #         20, 34, 35, 20, 37, 38, 21, 40, 41, 21, 43, 44, 21, 46, 47, 21, 49,
+        #         50, 21, 52, 53]
+        # for idx,pred_,target_ in enumerate(zip(pred_joints,target_joints)):
+        #     pred_list.append(self.find_p_vec(ktree,idx,pred_,*pred_[idx]))
+        #     target_list.append(self.find_p_vec(ktree,idx,target_,*target_[idx]))
+        # pred_list=torch.stack(pred_list,0).to(device)
+        # target_list=torch.stack(target_list,0).to(device)
+        # self.cos(pred_list,target_list)
+
+        return 0
+
+    def forward(self, input_tensor, target_tensor):
+        """
+        input_tensor.shape
+        torch.Size([10, 82])
+        target_joints.shape
+        torch.Size([10, 3, 65])
+        """
+        error,pred_joints,target_joints=self.joint_MSE(input_tensor, target_tensor)
+        error+=self.cosine_similarity(pred_joints,target_joints)
+        return error
 
 
 
