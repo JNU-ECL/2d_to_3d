@@ -51,12 +51,13 @@ class CustomLoss_joint(nn.Module):
             shape=vector_82[72:].unsqueeze(0).float().to('cpu')
             output = self.SMPL(betas=shape,global_orient=go,body_pose=pose,return_verts=True)
             pred_joints=output.joints[0]
-            pred_tensor.append(pred_joints[:22].tolist())
+            pred_tensor.append(pred_joints[:22])
             for xR_idx in SMPL_2_xR:
-                temp_joints.append(target_joints[xR_idx].tolist())
-            custom_target_tensor.append(temp_joints) 
-        pred_tensor=torch.tensor(pred_tensor,dtype=torch.float32)
-        custom_target_tensor=torch.tensor(custom_target_tensor,dtype=torch.float32)
+                temp_joints.append(target_joints[xR_idx])
+            custom_target_tensor.append(torch.stack(temp_joints,0))
+
+        pred_tensor=torch.stack(pred_tensor,0)
+        custom_target_tensor=torch.stack(custom_target_tensor,0).to('cpu')
         return self.loss(pred_tensor,custom_target_tensor)
 
 
