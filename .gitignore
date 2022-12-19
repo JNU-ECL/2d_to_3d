@@ -174,3 +174,4 @@ poetry.toml
 *.pkl
 *.zip
 *.pyc
+*.png
