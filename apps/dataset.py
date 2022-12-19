@@ -123,7 +123,17 @@ class temp_dataset(Dataset):
 		temp_json=None
 		with open(json_path,'r') as f:
 			temp_json=json.loads(f.read())
-		res = torch.tensor(temp_json['pts3d_fisheye'])
+		x=torch.tensor(temp_json['pts3d_fisheye'][0])
+		y=torch.tensor(temp_json['pts3d_fisheye'][1])
+		z=torch.tensor(temp_json['pts3d_fisheye'][2])
+		pelvis_x=torch.tensor(x[2])
+		pelvis_y=torch.tensor(y[2])
+		pelvis_z=torch.tensor(z[2])
+		x=(x-pelvis_x)*.01
+		y=(y-pelvis_y)*.01
+		z=(z-pelvis_z)*.01
+		res=[x,y,z]
+		res = torch.stack(res,0)
 		return res
 
 	def get_shape(self):
