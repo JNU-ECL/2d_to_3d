@@ -34,50 +34,50 @@ TrainSet
 └── ...
 """
 class BaseAugmentation:
-    def __init__(self, resize=[512,512],  **args):
-        self.transform = transforms.Compose([
-            transforms.Resize(resize, Image.BILINEAR),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-        ])
+	def __init__(self, resize=[512,512],  **args):
+		self.transform = transforms.Compose([
+			transforms.Resize(resize, Image.BILINEAR),
+			transforms.ToTensor(),
+			transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+		])
 
-    def __call__(self, image):
-        return self.transform(image)
+	def __call__(self, image):
+		return self.transform(image)
 
 def load_data(dataroot,data_type)->dict:
-    extension = '*.json' if data_type=='json' else '*.png'
-    subjects=[]
-    total_len=0
-    res={}
-    subjects={}
-    for folder in glob.glob(os.path.join(dataroot,'*')):
-        subject_name=folder.split('\\')[-1]
-        path_dict={}
-        for env in glob.glob(os.path.join(folder,'*')):
-            env_name=env.split('\\')[-1]
-            path_=glob.glob(os.path.join(env,'cam_down',data_type,extension))
-            total_len+=len(path_)
-            path_dict.update({      
-                env_name:path_
-                })
-        subjects.update({
-            subject_name : path_dict
-        })
-    res.update({
-        'subjects' : subjects,
-        'total_len' : total_len,
-    })
-        
-    return res
+	extension = '*.json' if data_type=='json' else '*.png'
+	subjects=[]
+	total_len=0
+	res={}
+	subjects={}
+	for folder in glob.glob(os.path.join(dataroot,'*')):
+		subject_name=folder.split('\\')[-1]
+		path_dict={}
+		for env in glob.glob(os.path.join(folder,'*')):
+			env_name=env.split('\\')[-1]
+			path_=glob.glob(os.path.join(env,'cam_down',data_type,extension))
+			total_len+=len(path_)
+			path_dict.update({      
+				env_name:path_
+				})
+		subjects.update({
+			subject_name : path_dict
+		})
+	res.update({
+		'subjects' : subjects,
+		'total_len' : total_len,
+	})
+		
+	return res
 
 
 def get_path(index,datadict)->str:
-    for sub in datadict['subjects'].keys():
-        for env in datadict['subjects'][sub].keys():
-            if index<len(datadict['subjects'][sub][env]):
-                return datadict['subjects'][sub][env][index]
-            index-=len(datadict['subjects'][sub][env])
-    return -1
+	for sub in datadict['subjects'].keys():
+		for env in datadict['subjects'][sub].keys():
+			if index<len(datadict['subjects'][sub][env]):
+				return datadict['subjects'][sub][env][index]
+			index-=len(datadict['subjects'][sub][env])
+	return -1
 
 
 class temp_dataset(Dataset):
@@ -123,9 +123,10 @@ class temp_dataset(Dataset):
 		temp_json=None
 		with open(json_path,'r') as f:
 			temp_json=json.loads(f.read())
-		x=torch.tensor(temp_json['pts3d_fisheye'][0])
-		y=torch.tensor(temp_json['pts3d_fisheye'][1])
-		z=torch.tensor(temp_json['pts3d_fisheye'][2])
+		joints = np.vstack([j['trans'] for j in temp_json['joints']]).T
+		x=torch.tensor(joints[0])
+		y=torch.tensor(joints[1])
+		z=torch.tensor(joints[2])
 		pelvis_x=torch.tensor(x[2])
 		pelvis_y=torch.tensor(y[2])
 		pelvis_z=torch.tensor(z[2])
@@ -134,8 +135,15 @@ class temp_dataset(Dataset):
 		z=(z-pelvis_z)*.01
 		res=[x,y,z]
 		res = torch.stack(res,0)
-		return res
+		return res.to(torch.float32)
 
+	def get_info(self,json_path):
+		temp_json=None
+		with open(json_path,'r') as f:
+			temp_json=json.loads(f.read())
+		pass
+
+		
 	def get_shape(self):
 		pass
 
@@ -148,6 +156,7 @@ class temp_dataset(Dataset):
 		json_path=get_path(index,self.JSON)
 		seg_path=get_path(index,self.SEGMAP)
 		
+	   
 		image=self.get_rgba(img_path)
 		joints=self.get_joints(json_path)
 		seg_image=self.get_rgba(seg_path)
@@ -156,6 +165,7 @@ class temp_dataset(Dataset):
 		res={}
 		if self.is_train:
 			res.update({
+				'info' : img_path,
 				'image': image,
 				'joints': joints,
 				'seg_image': seg_image,
