@@ -175,4 +175,8 @@ poetry.toml
 *.zip
 *.pyc
 *.png
-*.ipynb
+*.pth
+*.json
+*.yaml
+*.wandb
+*.txt
