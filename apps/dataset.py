@@ -94,10 +94,15 @@ class temp_dataset(Dataset):
 		if self.is_train:
 			self.JSON = load_data(self.root,'json')
 			self.SEGMAP = load_data(self.root,'objectId')
+			self.DEPTH = load_data(self.root,'depth')
 			self.SMPL = os.path.join(self.root,'smpl')
 
 		# PIL to tensor
-		self.transform = None
+		self.transform = transforms.Compose([
+			transforms.Resize([512,512], Image.BILINEAR),
+			transforms.ToTensor(),
+			transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+		])
 
 		# # augmentation
 		# self.aug_trans = transforms.Compose([
@@ -105,8 +110,8 @@ class temp_dataset(Dataset):
 		#                            hue=opt.aug_hue)
 		# ])
 
-	def set_transform(self, transform):
-		self.transform = transform  
+	# def set_transform(self, transform):
+	# 	self.transform = transform  
 			
 	def get_rgba(self,img_path):
 		image_=Image.open(img_path).convert('RGB')
@@ -118,6 +123,12 @@ class temp_dataset(Dataset):
 			temp_json=json.loads(f.read())
 		
 		return temp_json['camera']
+
+	def get_depth(self,depth_path):
+		depth_image = Image.open(depth_path).convert('')
+		depth_image = transforms.Resize([512,512],Image.BILINEAR)(depth_image)
+		depth_image = transforms.ToTensor()(depth_image)
+		return depth_image
 
 	def get_joints(self,json_path):
 		temp_json=None
@@ -155,12 +166,13 @@ class temp_dataset(Dataset):
 		img_path=get_path(index,self.IMAGE)
 		json_path=get_path(index,self.JSON)
 		seg_path=get_path(index,self.SEGMAP)
-		
+		depth_path=get_path(index,self.DEPTH)
 	   
 		image=self.get_rgba(img_path)
 		joints=self.get_joints(json_path)
 		seg_image=self.get_rgba(seg_path)
 		camera_info=self.get_camera(json_path)
+		depth_map=self.get_depth(depth_path)
 
 		res={}
 		if self.is_train:
@@ -169,6 +181,7 @@ class temp_dataset(Dataset):
 				'image': image,
 				'joints': joints,
 				'seg_image': seg_image,
+				'depth' : depth_map,
 				'camera_info': camera_info
 			})
 			return res

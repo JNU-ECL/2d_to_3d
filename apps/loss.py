@@ -30,8 +30,9 @@ class CustomLoss_joint(nn.Module):
                          num_betas=num_betas,
                          num_expression_coeffs=num_expression_coeffs,
                          ext=ext)
-        self.loss=nn.MSELoss()
+        self.l2loss=nn.MSELoss()
         self.cos=nn.CosineSimilarity()
+        
 
     def joint_MSE(self, input_tensor, target_tensor):
         batch_size=input_tensor.shape[0]
@@ -53,7 +54,7 @@ class CustomLoss_joint(nn.Module):
 
         pred_tensor=torch.stack(pred_tensor,0)
         custom_target_tensor=torch.stack(custom_target_tensor,0).to('cpu')
-        return self.loss(pred_tensor,custom_target_tensor),pred_tensor,custom_target_tensor
+        return self.l2loss(pred_tensor,custom_target_tensor),pred_tensor,custom_target_tensor
 
     def find_p_vec(self,ktree,idx,joint,x,y,z):
         if ktree[idx]==-1:
@@ -62,21 +63,23 @@ class CustomLoss_joint(nn.Module):
         self.find_p_vec(ktree,ktree[idx],joint,*temp_j)
 
     def cosine_similarity(self, pred_joints,target_joints):
-        # error=0
-        # pred_list=[]
-        # target_list=[]
-        # ktree=[-1,  0,  0,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  9,  9, 12, 13,
-        #         14, 16, 17, 18, 19, 15, 15, 15, 20, 25, 26, 20, 28, 29, 20, 31, 32,
-        #         20, 34, 35, 20, 37, 38, 21, 40, 41, 21, 43, 44, 21, 46, 47, 21, 49,
-        #         50, 21, 52, 53]
-        # for idx,pred_,target_ in enumerate(zip(pred_joints,target_joints)):
-        #     pred_list.append(self.find_p_vec(ktree,idx,pred_,*pred_[idx]))
-        #     target_list.append(self.find_p_vec(ktree,idx,target_,*target_[idx]))
-        # pred_list=torch.stack(pred_list,0).to(device)
-        # target_list=torch.stack(target_list,0).to(device)
-        # self.cos(pred_list,target_list)
+        error=0
+        pred_list=[]
+        target_list=[]
+        ktree=[-1,  0,  0,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  9,  9, 12, 13,
+                14, 16, 17, 18, 19, 15, 15, 15, 20, 25, 26, 20, 28, 29, 20, 31, 32,
+                20, 34, 35, 20, 37, 38, 21, 40, 41, 21, 43, 44, 21, 46, 47, 21, 49,
+                50, 21, 52, 53]
+        for idx,(pred_,target_) in enumerate(zip(pred_joints,target_joints)):
+            pred_list.append(self.find_p_vec(ktree,idx,pred_joints,*pred_joints[idx]))
+            target_list.append(self.find_p_vec(ktree,idx,target_joints,*target_joints[idx]))
 
-        return 0
+        
+        pred_list=torch.tensor(pred_list).to(device)
+        target_list=torch.tensor(target_list).to(device)
+        error=nn.CosineSimilarity()(pred_list,target_list).abs().mean()
+
+        return error
 
     def forward(self, input_tensor, target_tensor):
         """
@@ -89,7 +92,16 @@ class CustomLoss_joint(nn.Module):
         error+=self.cosine_similarity(pred_joints,target_joints)
         return error
 
+class Depth_loss(nn.Module):
+    def __init__(self, weight=None,
+                 gamma=2., reduction='mean'):
+        nn.Module.__init__(self)
+        self.loss=nn.MSELoss()
 
+    def forward(self,x,label):
+        res=None
+        res=self.loss(x,label)
+        return res
 
 # https://discuss.pytorch.org/t/is-this-a-correct-implementation-for-focal-loss-in-pytorch/43327/8
 class FocalLoss(nn.Module):
@@ -159,7 +171,8 @@ _criterion_entrypoints = {
     'focal': FocalLoss,
     'label_smoothing': LabelSmoothingLoss,
     'f1': F1Loss,
-    'CustomLoss_joint' : CustomLoss_joint
+    'CustomLoss_joint' : CustomLoss_joint,
+    'Depth_loss' : Depth_loss
 }
 
 
