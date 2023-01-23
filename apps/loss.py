@@ -15,7 +15,34 @@ num_expression_coeffs = 10
 # sample_shape = True
 # sample_expression = True
 
-SMPL_2_xR=[2,31,61,62,27,57,63,4,34,64,29,59,0,28,58,1,3,33,5,35,6,36]
+SMPL_2_xR=[
+    2,
+    31,
+    61,
+    62,
+    27,
+    57,
+    63,
+    4,
+    34,
+    64,
+    29,
+    59,
+    0,
+    28,
+    58,
+    1,
+    3,
+    33,
+    5,
+    35,
+    6,
+    36,
+    11,
+    41
+    ]
+
+skip_num = [13, 14]
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class CustomLoss_joint(nn.Module):
@@ -31,7 +58,7 @@ class CustomLoss_joint(nn.Module):
                          num_expression_coeffs=num_expression_coeffs,
                          ext=ext)
         self.l2loss=nn.MSELoss()
-        self.cos=nn.CosineSimilarity()
+        # self.cos=nn.CosineSimilarity()
         
 
     def joint_MSE(self, input_tensor, target_tensor):
@@ -47,7 +74,7 @@ class CustomLoss_joint(nn.Module):
             shape=vector_82[72:].unsqueeze(0).float().to('cpu')
             output = self.SMPL(betas=shape,global_orient=go,body_pose=pose,return_verts=True)
             pred_joints=output.joints[0]
-            pred_tensor.append(pred_joints[:22])
+            pred_tensor.append(pred_joints[:22]) # 23까지 바꿀것
             for xR_idx in SMPL_2_xR:
                 temp_joints.append(target_joints[xR_idx])
             custom_target_tensor.append(torch.stack(temp_joints,0))
@@ -61,7 +88,7 @@ class CustomLoss_joint(nn.Module):
             return x,y,z
         temp_j=(x,y,z)-joint[ktree[idx]]
         self.find_p_vec(ktree,ktree[idx],joint,*temp_j)
-
+    """
     def cosine_similarity(self, pred_joints,target_joints):
         error=0
         pred_list=[]
@@ -80,7 +107,7 @@ class CustomLoss_joint(nn.Module):
         error=nn.CosineSimilarity()(pred_list,target_list).abs().mean()
 
         return error
-
+    """
     def forward(self, input_tensor, target_tensor):
         """
         input_tensor.shape
@@ -102,6 +129,37 @@ class Depth_loss(nn.Module):
         res=None
         res=self.loss(x,label)
         return res
+
+class kp_3d_loss(nn.Module):
+    def __init__(self) -> None:
+        nn.Module.__init__(self)
+        self.loss = nn.MSELoss()
+
+    def forward(self,x,label):
+        res=None
+        res=self.loss(x,label)
+        return res
+
+class kp_2d_loss(nn.Module):
+    def __init__(self) -> None:
+        nn.Module.__init__(self)
+        self.loss=nn.MSELoss()
+    
+    def forward(self,x,label):
+        res=None
+        res=self.loss(x,label)
+        return torch.log(res)
+
+class cam_loss(nn.Module):
+    def __init__(self) -> None:
+        nn.Module.__init__(self)
+        self.loss=nn.MSELoss()
+    
+    def forward(self,x,label):
+        res=None
+        res=self.loss(x,label)
+        return torch.log(res)
+
 
 # https://discuss.pytorch.org/t/is-this-a-correct-implementation-for-focal-loss-in-pytorch/43327/8
 class FocalLoss(nn.Module):
@@ -172,7 +230,10 @@ _criterion_entrypoints = {
     'label_smoothing': LabelSmoothingLoss,
     'f1': F1Loss,
     'CustomLoss_joint' : CustomLoss_joint,
-    'Depth_loss' : Depth_loss
+    'Depth_loss' : Depth_loss,
+    '2d_loss' : kp_2d_loss,
+    '3d_loss' : kp_3d_loss,
+    'cam_loss' : cam_loss
 }
 
 
