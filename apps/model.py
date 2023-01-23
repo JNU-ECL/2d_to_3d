@@ -21,7 +21,7 @@ import torch
 import torchvision.models as models
 from smplx.body_models import SMPL
 import numpy as np
-from geometry import rot6d_to_rotmat, projection, rotation_matrix_to_angle_axis
+from geometry import rot6d_to_rotmat, projection_temp, rotation_matrix_to_angle_axis
 
 SMPL_MEAN_PARAMS = r'C:\Users\user\Documents\GitHub\2d_to_3d\model\smpl_mean_params.npz'
 SMPL_MODEL_DIR = r'C:\Users\user\Documents\GitHub\2d_to_3d\model\smpl'
@@ -366,16 +366,18 @@ class Regressor(nn.Module):
 
         npose = 24 * 6
 
-        self.fc1 = nn.Linear(feat_dim + npose + 13, 1024)
+        self.fc1 = nn.Linear(feat_dim + npose + 16, 1024)
         self.drop1 = nn.Dropout()
         self.fc2 = nn.Linear(1024, 1024)
         self.drop2 = nn.Dropout()
         self.decpose = nn.Linear(1024, npose)
         self.decshape = nn.Linear(1024, 10)
-        self.deccam = nn.Linear(1024, 3)
+        self.deccam_trans = nn.Linear(1024, 3)
+        self.deccam_rot = nn.Linear(1024, 3)
         nn.init.xavier_uniform_(self.decpose.weight, gain=0.01)
         nn.init.xavier_uniform_(self.decshape.weight, gain=0.01)
-        nn.init.xavier_uniform_(self.deccam.weight, gain=0.01)
+        nn.init.xavier_uniform_(self.deccam_trans.weight, gain=0.01)
+        nn.init.xavier_uniform_(self.deccam_rot.weight, gain=0.01)
 
         self.smpl = SMPL(
             SMPL_MODEL_DIR,
@@ -386,33 +388,39 @@ class Regressor(nn.Module):
         mean_params = np.load(smpl_mean_params)
         init_pose = torch.from_numpy(mean_params['pose'][:]).unsqueeze(0)
         init_shape = torch.from_numpy(mean_params['shape'][:].astype('float32')).unsqueeze(0)
-        init_cam = torch.from_numpy(mean_params['cam']).unsqueeze(0)
+        init_cam_trans = torch.from_numpy(mean_params['cam']).unsqueeze(0)
+        init_cam_rot = torch.from_numpy(mean_params['cam']).unsqueeze(0)
         self.register_buffer('init_pose', init_pose)
         self.register_buffer('init_shape', init_shape)
-        self.register_buffer('init_cam', init_cam)
+        self.register_buffer('init_cam_trans', init_cam_trans)
+        self.register_buffer('init_cam_rot', init_cam_rot)
 
-    def forward(self, x, init_pose=None, init_shape=None, init_cam=None, n_iter=1, J_regressor=None):
+    def forward(self, x, init_pose=None, init_shape=None, init_cam_trans=None, init_cam_rot=None, n_iter=1, J_regressor=None):
         batch_size = x.shape[0]
 
         if init_pose is None:
             init_pose = self.init_pose.expand(batch_size, -1)
         if init_shape is None:
             init_shape = self.init_shape.expand(batch_size, -1)
-        if init_cam is None:
-            init_cam = self.init_cam.expand(batch_size, -1)
+        if init_cam_trans is None:
+            init_cam_trans = self.init_cam_trans.expand(batch_size, -1)
+        if init_cam_rot is None:
+            init_cam_rot = self.init_cam_rot.expand(batch_size, -1)
 
         pred_pose = init_pose
         pred_shape = init_shape
-        pred_cam = init_cam
+        pred_cam_trans = init_cam_trans
+        pred_cam_rot = init_cam_rot
         for i in range(n_iter):
-            xc = torch.cat([x, pred_pose, pred_shape, pred_cam], 1)
+            xc = torch.cat([x, pred_pose, pred_shape, pred_cam_trans, pred_cam_rot], 1)
             xc = self.fc1(xc)
             xc = self.drop1(xc)
             xc = self.fc2(xc)
             xc = self.drop2(xc)
             pred_pose = self.decpose(xc) + pred_pose
             pred_shape = self.decshape(xc) + pred_shape
-            pred_cam = self.deccam(xc) + pred_cam
+            pred_cam_trans = self.deccam_trans(xc) + pred_cam_trans
+            pred_cam_rot = self.deccam_rot(xc) + pred_cam_rot
 
         pred_rotmat = rot6d_to_rotmat(pred_pose).view(batch_size, 24, 3, 3)
 
@@ -424,9 +432,10 @@ class Regressor(nn.Module):
         )
 
         pred_vertices = pred_output.vertices
-        pred_joints = pred_output.joints
+        pred_joints = pred_output.joints[:,:24,:]
         # pred_smpl_joints = pred_output.smpl_joints
-        pred_keypoints_2d = projection(pred_joints, pred_cam)
+        # pred_keypoints_2d = projection(pred_joints, pred_cam_trans)
+        pred_keypoints_2d = projection_temp(pred_joints, pred_cam_trans, pred_cam_rot)
         pose = rotation_matrix_to_angle_axis(pred_rotmat.reshape(-1, 3, 3)).reshape(-1, 72)
 
         if J_regressor is not None:
@@ -436,14 +445,15 @@ class Regressor(nn.Module):
             pred_joints = pred_joints - pred_pelvis
 
         output = {
-            'theta'  : torch.cat([pred_cam, pred_shape, pose], dim=1),
+            'theta'  : torch.cat([pred_cam_trans, pred_shape, pose], dim=1),
             'verts'  : pred_vertices,
             'kp_2d'  : pred_keypoints_2d,
             'kp_3d'  : pred_joints,
             # 'smpl_kp_3d' : pred_smpl_joints,
             'rotmat' : pred_rotmat,
-            'pred_cam': pred_cam,
-            'pred_shape': pred_shape,
-            'pred_pose': pred_pose,
+            'pred_cam_trans' : pred_cam_trans,
+            'pred_cam_rot' : pred_cam_rot,
+            # 'pred_shape': pred_shape,
+            # 'pred_pose': pred_pose,
         }
         return output
