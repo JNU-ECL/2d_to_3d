@@ -10,6 +10,7 @@ from PIL import Image, ImageOps
 import os
 import glob
 from tqdm import tqdm
+from geometry import rot6d_to_rotmat, projection_temp, rotation_matrix_to_angle_axis, projection_temp_dataset
 
 """import custom_utils
 from custom_utils import get_ocr, ocr_to_coco, coco_to_mask
@@ -90,6 +91,9 @@ class temp_dataset(Dataset):
 		
 		self.IMAGE = load_data(self.root,'rgba')
 		self.subject_names=self.IMAGE.keys()
+
+		self.SMPL_2_xR=[2,31,61,62,27,57,63,4,34,64,29,59,0,28,58,1,3,33,5,35,6,36,11,41]
+		self.skip_num = [13, 14]
 		
 		if self.is_train:
 			self.JSON = load_data(self.root,'json')
@@ -121,8 +125,9 @@ class temp_dataset(Dataset):
 		temp_json=None
 		with open(json_path,'r') as f:
 			temp_json=json.loads(f.read())
-		
-		return temp_json['camera']
+		trans=torch.tensor(temp_json['camera']['trans'])
+		rot=torch.tensor(temp_json['camera']['rot'])
+		return trans,rot
 
 	def get_depth(self,depth_path):
 		depth_image = Image.open(depth_path).convert('')
@@ -130,7 +135,7 @@ class temp_dataset(Dataset):
 		depth_image = transforms.ToTensor()(depth_image)
 		return depth_image
 
-	def get_joints(self,json_path):
+	def get_3d_joints(self,json_path):
 		temp_json=None
 		with open(json_path,'r') as f:
 			temp_json=json.loads(f.read())
@@ -145,8 +150,37 @@ class temp_dataset(Dataset):
 		y=(y-pelvis_y)*.01
 		z=(z-pelvis_z)*.01
 		res=[x,y,z]
-		res = torch.stack(res,0)
-		return res.to(torch.float32)
+		res = torch.stack(res,0).to(torch.float32).T
+		
+		
+		SMPL_label=[]
+		for xR_idx in self.SMPL_2_xR:
+			SMPL_label.append(res[xR_idx])
+		SMPL_label=torch.stack(SMPL_label)
+
+		return SMPL_label
+
+	# def get_cam_info(self,json_path):
+	# 	pass
+
+	def get_2d_joints(self,json_path):
+		temp_json=None
+		res=None
+		with open(json_path,'r') as f:
+			temp_json=json.loads(f.read())
+		h_fov = torch.tensor(temp_json['camera']['cam_fov'])
+		translation = torch.tensor(temp_json['camera']['trans'])
+		rotation = torch.tensor(temp_json['camera']['rot']) * np.pi / 180.0
+		joints_3d = self.get_3d_joints(json_path)
+		# SMPL_label=[]
+		# for xR_idx in self.SMPL_2_xR:
+		# 	SMPL_label.append(joints_3d[xR_idx])
+		# SMPL_label=torch.stack(SMPL_label)
+		# SMPL_label=SMPL_label
+		
+		joints_2d = projection_temp_dataset(joints_3d,translation,rotation)
+		return joints_2d.squeeze(1)
+	
 
 	def get_info(self,json_path):
 		temp_json=None
@@ -169,7 +203,8 @@ class temp_dataset(Dataset):
 		depth_path=get_path(index,self.DEPTH)
 	   
 		image=self.get_rgba(img_path)
-		joints=self.get_joints(json_path)
+		joints_3d=self.get_3d_joints(json_path)
+		joints_2d=self.get_2d_joints(json_path)
 		seg_image=self.get_rgba(seg_path)
 		camera_info=self.get_camera(json_path)
 		depth_map=self.get_depth(depth_path)
@@ -179,7 +214,8 @@ class temp_dataset(Dataset):
 			res.update({
 				'info' : img_path,
 				'image': image,
-				'joints': joints,
+				'joints_3d' : joints_3d,
+				'joints_2d' : joints_2d, 
 				'seg_image': seg_image,
 				'depth' : depth_map,
 				'camera_info': camera_info
