@@ -240,6 +240,43 @@ def rotmat_to_rot6d(x):
 	return x
 
 def projection_temp(pred_joints, pred_camera_trans, pred_camera_rots ,retain_z=False):
+	camera_center = torch.zeros(1, 2)
+	batch_size=len(pred_joints)
+	#    rotation=torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1).to(pred_joints.device),
+	Mmayas=torch.stack([torch.eye(3) for _ in range(batch_size)])
+	for Mmaya in Mmayas:
+		Mmaya[2,2]=-1.
+	# camera_mats=torch.stack([torch.eye(4) for _ in range(batch_size)]).requires_grad_()
+	temp_pred_rot = []
+	temp_pred_trans = []
+	for i in range(batch_size):
+		x_rot=Rot_x(pred_camera_rots[i][0].cpu()).squeeze(0)
+		y_rot=Rot_y(pred_camera_rots[i][1].cpu()).squeeze(0)
+		z_rot=Rot_z(pred_camera_rots[i][2].cpu()).squeeze(0)
+		temp_rot=z_rot.mm(y_rot)
+		temp_rot=temp_rot.mm(x_rot)
+		temp_rot=temp_rot.unsqueeze(0)
+  
+		temp_pred_rot.append(temp_rot)
+	temp_pred_rot = torch.stack(temp_pred_rot)
+	# temp_pred_trans.append()
+	# camera_mat[:3,3]=pred_camera_trans[i]
+	temp_pred_rot = torch.linalg.inv(temp_pred_rot).squeeze(1)
+	temp_pred_rot = temp_pred_rot.bmm(Mmayas).to(pred_joints.device)
+
+	# camera_rot_mats=torch.stack(camera_rot_mats,0).to(pred_joints.device)
+	pred_keypoints_2d = perspective_projection_temp_model(pred_joints,
+											   pred_rotation = temp_pred_rot,
+											   pred_trans = pred_camera_trans,
+											   focal_length=352.,
+											   camera_center=camera_center,
+											   retain_z=retain_z)
+	# Normalize keypoints to [-1,1]
+	pred_keypoints_2d = pred_keypoints_2d
+	return pred_keypoints_2d
+
+"""
+def projection_temp(pred_joints, pred_camera_trans, pred_camera_rots ,retain_z=False):
 	pred_cam_t = torch.stack([pred_camera_trans[:, 1],
 							  pred_camera_trans[:, 2],
 							  2 * 5000. / (224. * pred_camera_trans[:, 0] + 1e-9)], dim=-1)
@@ -248,9 +285,9 @@ def projection_temp(pred_joints, pred_camera_trans, pred_camera_rots ,retain_z=F
 	#    rotation=torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1).to(pred_joints.device),
 	camera_rot_mats=[]
 	for i in range(batch_size):
-		temp_rot=Rot_x(pred_camera_rots[i][0].cpu()).squeeze(0)
+		temp_rot=Rot_z(pred_camera_rots[i][0].cpu()).squeeze(0)
 		temp_rot=temp_rot.mm(Rot_y(pred_camera_rots[i][1].cpu()).squeeze(0))
-		temp_rot=temp_rot.mm(Rot_z(pred_camera_rots[i][2].cpu()).squeeze(0))
+		temp_rot=temp_rot.mm(Rot_x(pred_camera_rots[i][2].cpu()).squeeze(0))
 		temp_rot.unsqueeze(0)
 		camera_rot_mats.append(temp_rot)
 
@@ -258,43 +295,92 @@ def projection_temp(pred_joints, pred_camera_trans, pred_camera_rots ,retain_z=F
 	pred_keypoints_2d = perspective_projection(pred_joints,
 											   rotation=camera_rot_mats,
 											   translation=pred_cam_t,
-											   focal_length=5000.,
+											   focal_length=5000,
 											   camera_center=camera_center,
 											   retain_z=retain_z)
 	# Normalize keypoints to [-1,1]
 	pred_keypoints_2d = pred_keypoints_2d / (224. / 2.)
 	return pred_keypoints_2d
 # dataset은 1개씩 빠지고 model 은 batch size 씩 빠짐
-	
+
+def projection_temp_dataset(label_joints, label_camera_trans, label_camera_rots ,retain_z=False):
+	label_joints=label_joints.T
+	Khmc = np.array([[352.59619801644876, 0.0, 0.0],
+				  [0.0, 352.70276325061578, 0.0],
+				  [256, 256, 1.0]]).T
+	kd = np.array([-0.05631891929412012, -0.0038333424842925286,
+					-0.00024681888617308917, -0.00012153386798050158])
+
+	Mmaya = np.array([[1, 0, 0, 0],
+					[0, 1, 0, 0],
+					[0, 0, -1, 0],
+					[0, 0, 0, 1]])
+
+
+	# h_fov = np.array(data['camera']['cam_fov'])
+	translation = label_camera_trans
+	rotation = label_camera_rots
+
+	Mf = transformations.euler_matrix(rotation[0],
+									rotation[1],
+									rotation[2],
+									'sxyz')
+
+	Mf[0:3, 3] = translation
+	Mf = np.linalg.inv(Mf)
+	M = Mmaya.dot(Mf)
+
+	joints = label_joints
+	Xj = M[0:3, 0:3].dot(joints) + M[0:3, 3:4]
+
+	pts2d, jac = cv2.fisheye.projectPoints(
+		Xj.T.reshape((1, -1, 3)).astype(np.float32),
+		(0, 0, 0),
+		(0, 0, 0),
+		Khmc,
+		kd
+	)
+	pts2d 
+
+	return pts2d.squeeze(0)
+"""
 def projection_temp_dataset(pred_joints, pred_camera_trans, pred_camera_rots ,retain_z=False):
-	pred_cam_t = torch.stack([pred_camera_trans[1],
-							  pred_camera_trans[2],
-							  2 * 5000. / (224. * pred_camera_trans[0] + 1e-9)], dim=-1)
+	# pred_cam_t = torch.stack([pred_camera_trans[0],
+	#                           pred_camera_trans[1],
+	#                           2 * 352. / (224. * pred_camera_trans[2] + 1e-9)], dim=-1)
 
 	camera_center = torch.zeros(1, 2)
 	#    rotation=torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1).to(pred_joints.device),
-	camera_rot_mats=[]
-
-	temp_rot=Rot_x(pred_camera_rots[0].cpu()).squeeze(0)
-	temp_rot=temp_rot.mm(Rot_y(pred_camera_rots[1].cpu()).squeeze(0))
-	temp_rot=temp_rot.mm(Rot_z(pred_camera_rots[2].cpu()).squeeze(0))
-	temp_rot.unsqueeze(0)
-	camera_rot_mats.append(temp_rot)
-
-	camera_rot_mats=torch.stack(camera_rot_mats,0).to(pred_joints.device)
-	pred_keypoints_2d = perspective_projection(pred_joints.unsqueeze(0),
-											   rotation=camera_rot_mats,
-											   translation=pred_cam_t,
-											   focal_length=5000.,
+	Mmaya=torch.eye(4)
+	Mmaya[2,2]=-1
+	Mmaya[0,0]=-1
+	camera_mat=torch.eye(4)
+	x_rot=Rot_x(pred_camera_rots[0].cpu()).squeeze(0)
+	y_rot=Rot_y(pred_camera_rots[1].cpu()).squeeze(0)
+	z_rot=Rot_z(pred_camera_rots[2].cpu()).squeeze(0)
+	temp_rot=z_rot.mm(y_rot)
+	temp_rot=temp_rot.mm(x_rot)
+	temp_rot=temp_rot.unsqueeze(0)
+	camera_mat[:3,:3]=temp_rot
+	camera_mat[:3,3]=pred_camera_trans
+	camera_mat=torch.linalg.inv(camera_mat)
+	camera_mat=camera_mat.mm(Mmaya)
+	# camera_rot_mats=torch.stack(camera_rot_mats,0).to(pred_joints.device)
+	pred_keypoints_2d = perspective_projection_temp(pred_joints.unsqueeze(0),
+											   rotation_trans=camera_mat,
+											   focal_length=352.,
 											   camera_center=camera_center,
 											   retain_z=retain_z)
 	# Normalize keypoints to [-1,1]
-	pred_keypoints_2d = pred_keypoints_2d / (224. / 2.)
+	# pred_keypoints_2d = pred_keypoints_2d / (224. / 2.)
 	return pred_keypoints_2d
+
 def projection(pred_joints, pred_camera, retain_z=False):
-	pred_cam_t = torch.stack([pred_camera[:, 1],
-							  pred_camera[:, 2],
-							  2 * 5000. / (224. * pred_camera[:, 0] + 1e-9)], dim=-1)
+	pred_cam_t = torch.stack([pred_camera[:, 0],
+							  pred_camera[:, 1],
+							  2 * 5000. / (224. * pred_camera[:, 2] + 1e-9)], dim=-1)
+	
+	
 	batch_size = pred_joints.shape[0]
 	camera_center = torch.zeros(batch_size, 2)
 	pred_keypoints_2d = perspective_projection(pred_joints,
@@ -343,7 +429,59 @@ def perspective_projection(points, rotation, translation,
 	else:
 		return projected_points[:, :, :-1]
 
+def perspective_projection_temp_model(points, pred_rotation,pred_trans,
+						   focal_length, camera_center, retain_z=False):
+	batch_size = points.shape[0]
+	K = torch.zeros([batch_size, 3, 3], device=points.device) # K = camera intrinsics
+	K[:,0,0] = focal_length
+	K[:,1,1] = focal_length
+	K[:,2,2] = 1.
+	K[:,:-1, -1] = camera_center
 
+	# Transform points
+	points = torch.einsum('bij,bkj->bki', pred_rotation, points)
+	if batch_size == 1:
+		points = points + pred_trans.unsqueeze(0)
+	else:
+		points = points + pred_trans.unsqueeze(1)
+
+	# Apply perspective distortion
+	projected_points = points / points[:,:,-1].unsqueeze(-1) # points[:,:,-1] -> x,y,z divide by z axis -> x/z, y/z, z/z 
+
+	# Apply camera intrinsics
+	projected_points = torch.einsum('bij,bkj->bki', K, projected_points)
+
+	if retain_z:
+		return projected_points
+	else:
+		return projected_points[:, :, :-1]
+
+def perspective_projection_temp(points, rotation_trans,
+						   focal_length, camera_center, retain_z=False):
+	batch_size = points.shape[0]
+	K = torch.zeros([batch_size, 3, 3], device=points.device) # K = camera intrinsics
+	K[:,0,0] = focal_length
+	K[:,1,1] = focal_length
+	K[:,2,2] = 1.
+	K[:,:-1, -1] = camera_center
+
+	# Transform points
+	points = torch.einsum('bij,bkj->bki', rotation_trans[:3,:3].unsqueeze(0), points)
+	if batch_size == 1:
+		points = points + rotation_trans[:3,3].unsqueeze(0)
+	else:
+		points = points + rotation_trans[:3,3].unsqueeze(1)
+
+	# Apply perspective distortion
+	projected_points = points / points[:,:,-1].unsqueeze(-1) # points[:,:,-1] -> only z axis 
+
+	# Apply camera intrinsics
+	projected_points = torch.einsum('bij,bkj->bki', K, projected_points)
+
+	if retain_z:
+		return projected_points
+	else:
+		return projected_points[:, :, :-1]
 def estimate_translation_np(S, joints_2d, joints_conf, focal_length=5000, img_size=224):
 	"""Find camera translation that brings 3D joints S closest to 2D the corresponding joints_2d.
 	Input:
@@ -417,17 +555,21 @@ def Rot_y(angle, category='torch', prepend_dim=True, device=None):
 		prepend_dim: prepend an extra dimension
 	Return: Rotation matrix with shape [1, 3, 3] (prepend_dim=True)
 	'''
+	tensor_0=torch.zeros(1).squeeze(0)
+	tensor_1=torch.ones(1).squeeze(0)
 	m = [
-		torch.tensor([torch.cos(angle), 0., torch.sin(angle)]),
-		torch.tensor([0., 1., 0.]),
-		torch.tensor([-torch.sin(angle), 0., torch.cos(angle)])
+		torch.stack([torch.cos(angle), tensor_0, torch.sin(angle)]),
+		torch.stack([tensor_0, tensor_1, tensor_0]),
+		torch.stack([-torch.sin(angle), tensor_0, torch.cos(angle)])
 		]
 	m = torch.stack(m)	
 	if category == 'torch':
 		if prepend_dim:
-			return torch.tensor(m, dtype=torch.float, device=device).unsqueeze(0)
+			return m.unsqueeze(0)
+			# return torch.tensor(m, dtype=torch.float, device=device).unsqueeze(0)
 		else:
-			return torch.tensor(m, dtype=torch.float, device=device)
+			return m
+			# return torch.tensor(m, dtype=torch.float, device=device)
 	elif category == 'numpy':
 		if prepend_dim:
 			return np.expand_dims(m, 0)
@@ -443,17 +585,21 @@ def Rot_x(angle, category='torch', prepend_dim=True, device=None):
 		prepend_dim: prepend an extra dimension
 	Return: Rotation matrix with shape [1, 3, 3] (prepend_dim=True)
 	'''
+	tensor_0=torch.zeros(1).squeeze(0)
+	tensor_1=torch.ones(1).squeeze(0)
 	m = [
-		torch.tensor([1., 0., 0.]),
-		torch.tensor([0., torch.cos(angle), -torch.sin(angle)]),
-		torch.tensor([0., torch.sin(angle), torch.cos(angle)])
+		torch.stack([tensor_1, tensor_0, tensor_0]),
+		torch.stack([tensor_0, torch.cos(angle), -torch.sin(angle)]),
+		torch.stack([tensor_0, torch.sin(angle), torch.cos(angle)])
 		]
 	m = torch.stack(m)
 	if category == 'torch':
 		if prepend_dim:
-			return torch.tensor(m, dtype=torch.float, device=device).unsqueeze(0)
+			return m.unsqueeze(0)
+			# return torch.tensor(m, dtype=torch.float, device=device).unsqueeze(0)
 		else:
-			return torch.tensor(m, dtype=torch.float, device=device)
+			return m
+			# return torch.tensor(m, dtype=torch.float, device=device)
 	elif category == 'numpy':
 		if prepend_dim:
 			return np.expand_dims(m, 0)
@@ -469,17 +615,21 @@ def Rot_z(angle, category='torch', prepend_dim=True, device=None):
 		prepend_dim: prepend an extra dimension
 	Return: Rotation matrix with shape [1, 3, 3] (prepend_dim=True)
 	'''
+	tensor_0=torch.zeros(1).squeeze(0)
+	tensor_1=torch.ones(1).squeeze(0)
 	m = [
-		torch.tensor([torch.cos(angle), -torch.sin(angle), 0.]),
-		torch.tensor([torch.sin(angle), torch.cos(angle), 0.]),
-		torch.tensor([0., 0., 1.])
+		torch.stack([torch.cos(angle), -torch.sin(angle), tensor_0]),
+		torch.stack([torch.sin(angle), torch.cos(angle), tensor_0]),
+		torch.stack([tensor_0, tensor_0, tensor_1])
 		]
 	m = torch.stack(m)
 	if category == 'torch':
 		if prepend_dim:
-			return torch.tensor(m, dtype=torch.float, device=device).unsqueeze(0)
+			return m.unsqueeze(0)
+			# return torch.tensor(m, dtype=torch.float, device=device).unsqueeze(0)
 		else:
-			return torch.tensor(m, dtype=torch.float, device=device)
+			return m
+			# return torch.tensor(m, dtype=torch.float, device=device)
 	elif category == 'numpy':
 		if prepend_dim:
 			return np.expand_dims(m, 0)
