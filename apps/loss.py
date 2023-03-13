@@ -158,8 +158,17 @@ class cam_loss(nn.Module):
     def forward(self,x,label):
         res=None
         res=self.loss(x,label)
-        return torch.log(res)
+        return res
 
+class heatmap_loss(nn.Module):
+    def __init__(self) -> None:
+        nn.Module.__init__(self)
+        self.loss = nn.CrossEntropyLoss()
+
+    def forward(self,x,label):
+        res = None
+        res = self.loss(x,label)
+        return res
 
 # https://discuss.pytorch.org/t/is-this-a-correct-implementation-for-focal-loss-in-pytorch/43327/8
 class FocalLoss(nn.Module):
@@ -233,7 +242,8 @@ _criterion_entrypoints = {
     'Depth_loss' : Depth_loss,
     '2d_loss' : kp_2d_loss,
     '3d_loss' : kp_3d_loss,
-    'cam_loss' : cam_loss
+    'cam_loss' : cam_loss,
+    'heatmap_loss' : heatmap_loss,
 }
 
 
