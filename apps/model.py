@@ -22,9 +22,14 @@ import torchvision.models as models
 from smplx.body_models import SMPL
 import numpy as np
 from geometry import rot6d_to_rotmat, projection_temp, rotation_matrix_to_angle_axis
+# TODO : kaolin based renderer 구현할것 
+import kaolin as kal
 
 SMPL_MEAN_PARAMS = r'C:\Users\user\Documents\GitHub\2d_to_3d\model\smpl_mean_params.npz'
 SMPL_MODEL_DIR = r'C:\Users\user\Documents\GitHub\2d_to_3d\model\smpl'
+use_cuda = torch.cuda.is_available()
+device = torch.device("cuda" if use_cuda else "cpu")
+
 class Resnet(nn.Module):
     def __init__(self, num_classes=82):
         super(Resnet, self).__init__()
@@ -43,15 +48,29 @@ class Resnet(nn.Module):
 class TempModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.feature_model = get_pose_net(True)
-        self.regressor=Regressor(2048,smpl_mean_params=SMPL_MEAN_PARAMS)
+        self.feature_model1 = get_pose_net(True)
+        # self.feature_model2 = get_pose_net(True)
+        self.regressor1=Regressor1(24)
+        self.regressor2=Regressor2(4096,smpl_mean_params=SMPL_MEAN_PARAMS)
 
     def forward(self, x):
         res = {}
-        feature_output,feature_avgpool=self.feature_model(x)
-        regressor_res_dict=self.regressor(feature_avgpool)
-        res['regressor_res_dict']=regressor_res_dict
-        res['depth_feature']=feature_output
+        depth_feature,feature_avgpool,heatmap=self.feature_model1(x)
+
+        regressor1_res_dict=self.regressor1(heatmap) # [10,24,512,512]
+        regressor2_res_dict=self.regressor2(
+            heatmap,
+            depth_feature,
+            init_cam_trans=regressor1_res_dict['pred_cam_trans'],
+            init_cam_rot=regressor1_res_dict['pred_cam_rot']
+            )
+        
+        res.update({
+			'regressor1_res_dict' : regressor1_res_dict,
+   	  	    'regressor2_res_dict' : regressor2_res_dict,
+     	    'depth_feature' : depth_feature,
+     	    'heatmap' : heatmap
+		})    
         return res
 
 
@@ -177,6 +196,8 @@ class PoseResNet(nn.Module):
 
     def __init__(self, block, layers, cfg, **kwargs):
         self.inplanes = 64
+        self.deconv1_inplanes = None
+        self.deconv2_inplanes = None
         extra = cfg.MODEL.EXTRA
         self.deconv_with_bias = extra.DECONV_WITH_BIAS
 
@@ -197,8 +218,15 @@ class PoseResNet(nn.Module):
         # used for deconv layers
         self.deconv_layers = self._make_deconv_layer(
             extra.NUM_DECONV_LAYERS, # 5
-            extra.NUM_DECONV_FILTERS, # [256,128,64,32,3]
+            [256,128,64,32,1], # [256,128,64,32,3]
             extra.NUM_DECONV_KERNELS, # [4,4,4,4,4]
+            self.inplanes,
+        )
+        self.deconv_layers2 = self._make_deconv_layer(
+            extra.NUM_DECONV_LAYERS, # 5
+            [256,128,64,32,24], # 512x512 
+            extra.NUM_DECONV_KERNELS, # [4,4,4,4,4]
+            self.inplanes,
         )
 
         self.final_layer = nn.Conv2d(
@@ -239,7 +267,7 @@ class PoseResNet(nn.Module):
 
         return deconv_kernel, padding, output_padding
 
-    def _make_deconv_layer(self, num_layers, num_filters, num_kernels):
+    def _make_deconv_layer(self, num_layers, num_filters, num_kernels, init_inplanes):
         assert num_layers == len(num_filters), \
             'ERROR: num_deconv_layers is different len(num_deconv_filters)'
         assert num_layers == len(num_kernels), \
@@ -250,11 +278,11 @@ class PoseResNet(nn.Module):
             # 4, 1, 0
             kernel, padding, output_padding = \
                 self._get_deconv_cfg(num_kernels[i], i)
-
+            
             planes = num_filters[i] # [256,128,64,32,3]
             layers.append(
                 nn.ConvTranspose2d(
-                    in_channels=self.inplanes,
+                    in_channels=init_inplanes,
                     out_channels=planes,
                     kernel_size=kernel,
                     stride=2,
@@ -263,28 +291,29 @@ class PoseResNet(nn.Module):
                     bias=self.deconv_with_bias))
             layers.append(nn.BatchNorm2d(planes, momentum=BN_MOMENTUM))
             layers.append(nn.ReLU(inplace=True))
-            self.inplanes = planes
+            init_inplanes = planes
 
         return nn.Sequential(*layers)
 
-    def forward(self, x):
-        x = self.conv1(x)
+    def forward(self, x): # -> 3x512x512
+        x = self.conv1(x) # -> 64x256x256
         x = self.bn1(x)
         x = self.relu(x)
-        x = self.maxpool(x)
+        x = self.maxpool(x) # -> 64x128x128
 
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
+        x = self.layer1(x) # -> 256x128x128
+        x = self.layer2(x) # -> 512x64x64
+        x = self.layer3(x) # -> 1024x32x32
+        temp_x = self.layer4(x) # -> 2048x16x16
 
-        x_avgpool = self.avgpool(x).squeeze(2).squeeze(2)
-        x = self.deconv_layers(x)
+        x_avgpool = self.avgpool(temp_x).squeeze(2).squeeze(2)
+        depth_feature = self.deconv_layers(temp_x)
+        joint_heatmap = self.deconv_layers2(temp_x)
         # x = self.final_layer(x)
         
         
 
-        return x,x_avgpool
+        return depth_feature,x_avgpool,joint_heatmap
 
     def init_weights(self, pretrained=''):
         if os.path.isfile(pretrained):
@@ -359,12 +388,123 @@ def get_pose_net(is_train, cfg=cfg,  **kwargs):
 
     return model
 
+# Direct regression based
+class Regressor1(nn.Module):
+    def __init__(self, feat_dim):
+        super().__init__()
+        # self.conv1 = nn.Conv2d(24, 64, kernel_size=3, stride=1, padding=0,bias=False)
+        # self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
+        # self.relu = nn.ReLU(inplace=True)
+        # self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+       
+  # TODO : kaolin renderer -> smpl render to masking loss      
+        # self.renderer = 
+        self.fc1 = nn.Linear(feat_dim, 1024)
+        self.drop1 = nn.Dropout()
+        self.fc2 = nn.Linear(1024, 1024)
+        self.drop2 = nn.Dropout()
+        
+        self.decjoint_fisheye = nn.Linear(1024, 65*2)
+        self.deccam_trans = nn.Linear(1024, 3)
+        self.deccam_rot = nn.Linear(1024, 3)
+        nn.init.xavier_uniform_(self.decjoint_fisheye.weight, gain=0.01)
+        nn.init.xavier_uniform_(self.deccam_trans.weight, gain=0.01)
+        nn.init.xavier_uniform_(self.deccam_rot.weight, gain=0.01)
 
-class Regressor(nn.Module):
+       
+        # TODO : setup mean value by xr_egopose
+
+        # init_cam_trans = torch.from_numpy(mean_params['cam']).unsqueeze(0)
+        # init_cam_rot = torch.from_numpy(mean_params['cam']).unsqueeze(0)
+        # self.register_buffer('init_pose', init_pose)
+        # self.register_buffer('init_shape', init_shape)
+        # self.register_buffer('init_cam_trans', init_cam_trans)
+        # self.register_buffer('init_cam_rot', init_cam_rot)
+
+    def forward(self, x, init_joint_fisheye=None, init_cam_trans=None, init_cam_rot=None, n_iter=1, J_regressor=None):
+        batch_size = x.shape[0]
+        """
+        # TODO : setup init value
+
+        # if init_joint_fisheye is None:
+            
+        # if init_cam_trans is None:
+        #     init_cam_trans = self.init_cam_trans.expand(batch_size, -1)
+        # if init_cam_rot is None:
+        #     init_cam_rot = self.init_cam_rot.expand(batch_size, -1)
+
+        pred_joint_fisheye = None
+        pred_cam_trans = init_cam_trans
+        pred_cam_rot = init_cam_rot
+        
+        for i in range(n_iter):
+            xc = torch.cat([x, pred_pose, pred_shape, pred_cam_trans, pred_cam_rot], 1)
+            xc = self.fc1(xc)
+            xc = self.drop1(xc)
+            xc = self.fc2(xc)
+            xc = self.drop2(xc)
+            pred_pose = self.decpose(xc) + pred_pose
+            pred_shape = self.decshape(xc) + pred_shape
+            pred_cam_trans = self.deccam_trans(xc) + pred_cam_trans
+            pred_cam_rot = self.deccam_rot(xc) + pred_cam_rot
+        """
+        
+        # x = self.conv1(x)
+        # x = self.bn1(x)
+        # x = self.relu(x)
+        # x = self.maxpool(x)
+        
+        x = self.avgpool(x)
+        x = x.squeeze()
+        x = self.fc1(x)
+        x = self.drop1(x)
+        x = self.fc2(x)
+        x = self.drop2(x)
+    
+        # pred_joint_fisheye_2d = self.decjoint_fisheye(x).view(-1,65,2)
+        pred_cam_trans = self.deccam_trans(x)
+        pred_cam_rot = self.deccam_rot(x)
+        """
+        if J_regressor is not None:
+            pred_joints = torch.matmul(J_regressor, pred_vertices)
+            pred_pelvis = pred_joints[:, [0], :].clone()
+            # pred_joints = pred_joints[:, H36M_TO_J14, :]
+            pred_joints = pred_joints - pred_pelvis
+        """
+        # TODO : change output
+        output = {
+            # 'theta'  : torch.cat([pred_cam_trans, pred_cam_rot, pred_joint_fisheye_2d], dim=1),
+            # 'pred_joint_fisheye_2d'  : pred_joint_fisheye_2d,
+            'pred_cam_trans' : pred_cam_trans,
+            'pred_cam_rot' : pred_cam_rot,
+        }
+        return output
+
+class Regressor2(nn.Module):
     def __init__(self, feat_dim, smpl_mean_params):
         super().__init__()
 
         npose = 24 * 6
+        self.procrustes={
+            'rotation': torch.tensor([[ 0.9999647 , -0.00426632,  0.00723915],
+                                        [ 0.00411011,  0.99976134,  0.02145697],
+                                        [-0.00732896, -0.02142646,  0.9997435 ]]).T.to(device),
+            'scale': 92.3,
+            'translation': torch.tensor([  0.9100, 115.3339,  -2.7504]).to(device)
+        }
+        self.flatten = nn.Flatten()
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.maxpool = nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=True)
+
+        self.conv_block0 = self._make_block(1,24)
+        self.conv_block1 = self._make_block(24,64) #512 512->256 256
+        self.conv_block2 = self._make_block(64,128) #256 256->128 128
+        self.conv_block3 = self._make_block(128,256) #128 128->64 64
+        self.conv_block4 = self._make_block(256,512) #64 64->32 32
+        self.conv_block5 = self._make_block(512,1024) #32 32->16 16
+        self.conv_block6 = self._make_block(1024,2048) #16 16->4 4 : 32768
+        
 
         self.fc1 = nn.Linear(feat_dim + npose + 16, 1024)
         self.drop1 = nn.Dropout()
@@ -395,7 +535,11 @@ class Regressor(nn.Module):
         self.register_buffer('init_cam_trans', init_cam_trans)
         self.register_buffer('init_cam_rot', init_cam_rot)
 
-    def forward(self, x, init_pose=None, init_shape=None, init_cam_trans=None, init_cam_rot=None, n_iter=1, J_regressor=None):
+    def forward(self, heatmap, depthmap, init_pose=None, init_shape=None, init_cam_trans=None, init_cam_rot=None, n_iter=1, J_regressor=None):
+        x=heatmap
+        x2=depthmap # 1 512 512
+
+
         batch_size = x.shape[0]
 
         if init_pose is None:
@@ -411,8 +555,29 @@ class Regressor(nn.Module):
         pred_shape = init_shape
         pred_cam_trans = init_cam_trans
         pred_cam_rot = init_cam_rot
+        
+        x = self.conv_block1(x)
+        x = self.conv_block2(x)
+        x = self.conv_block3(x)
+        x = self.conv_block4(x)
+        x = self.conv_block5(x)
+        x = self.conv_block6(x)
+        x = self.avgpool(x) #2048
+
+        x2 = self.conv_block0(x2) #->256
+        x2 = self.conv_block1(x2) #->128
+        x2 = self.conv_block2(x2) #->64
+        x2 = self.conv_block3(x2) #->32
+        x2 = self.conv_block4(x2)
+        x2 = self.conv_block5(x2)
+        x2 = self.conv_block6(x2)
+        x2 = self.avgpool(x2) #2048
+
+        x = x.squeeze()
+        x2 = x2.squeeze()
+
         for i in range(n_iter):
-            xc = torch.cat([x, pred_pose, pred_shape, pred_cam_trans, pred_cam_rot], 1)
+            xc = torch.cat([x, x2, pred_pose, pred_shape, pred_cam_trans, pred_cam_rot], 1)
             xc = self.fc1(xc)
             xc = self.drop1(xc)
             xc = self.fc2(xc)
@@ -433,6 +598,9 @@ class Regressor(nn.Module):
 
         pred_vertices = pred_output.vertices
         pred_joints = pred_output.joints[:,:24,:]
+        pred_joints = torch.einsum('bij,kj->bik',pred_joints,self.procrustes['rotation'])
+        pred_joints *= self.procrustes['scale']
+        pred_joints += self.procrustes['translation']
         # pred_smpl_joints = pred_output.smpl_joints
         # pred_keypoints_2d = projection(pred_joints, pred_cam_trans)
         pred_keypoints_2d = projection_temp(pred_joints, pred_cam_trans, pred_cam_rot)
@@ -457,3 +625,16 @@ class Regressor(nn.Module):
             # 'pred_pose': pred_pose,
         }
         return output
+
+    def _make_block(self,in_channels, out_channels, kernel_size=3, stride=1, padding=1):
+        return nn.Sequential(
+            nn.Conv2d(in_channels=in_channels,
+                      out_channels=out_channels,
+                      kernel_size=kernel_size,
+                      stride=stride,
+                      padding=padding),
+            nn.ReLU(inplace = True),
+            nn.MaxPool2d(kernel_size=2,
+                         stride=2,
+                         ceil_mode=True),
+        )
