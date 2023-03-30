@@ -148,7 +148,7 @@ class kp_2d_loss(nn.Module):
     def forward(self,x,label):
         res=None
         res=self.loss(x,label)
-        return torch.log(res)
+        return res
 
 class cam_loss(nn.Module):
     def __init__(self) -> None:
