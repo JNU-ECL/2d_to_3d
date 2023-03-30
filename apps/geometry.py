@@ -275,6 +275,27 @@ def projection_temp(pred_joints, pred_camera_trans, pred_camera_rots ,retain_z=F
 	pred_keypoints_2d = pred_keypoints_2d
 	return pred_keypoints_2d
 
+
+def create_euler(pred_camera_rots):
+	batch_size=len(pred_camera_rots)
+	
+	ret_pred_rot = []
+
+	for i in range(batch_size):
+		x_rot=Rot_x(pred_camera_rots[i][0].cpu()).squeeze(0)
+		y_rot=Rot_y(pred_camera_rots[i][1].cpu()).squeeze(0)
+		z_rot=Rot_z(pred_camera_rots[i][2].cpu()).squeeze(0)
+		temp_rot=z_rot.mm(y_rot)
+		temp_rot=temp_rot.mm(x_rot)
+		temp_rot=temp_rot.unsqueeze(0)
+  
+		ret_pred_rot.append(temp_rot)
+	ret_pred_rot = torch.stack(ret_pred_rot)
+
+
+	return ret_pred_rot
+
+
 """
 def projection_temp(pred_joints, pred_camera_trans, pred_camera_rots ,retain_z=False):
 	pred_cam_t = torch.stack([pred_camera_trans[:, 1],
@@ -547,7 +568,7 @@ def estimate_translation(S, joints_2d, focal_length=5000., img_size=224.):
 		trans[i] = estimate_translation_np(S_i, joints_i, conf_i, focal_length=focal_length, img_size=img_size)
 	return torch.from_numpy(trans).to(device)
 
-
+"""
 def Rot_y(angle, category='torch', prepend_dim=True, device=None):
 	'''Rotate around y-axis by angle
 	Args:
@@ -637,7 +658,100 @@ def Rot_z(angle, category='torch', prepend_dim=True, device=None):
 			return m
 	else:
 		raise ValueError("category must be 'torch' or 'numpy'")
+"""
+def Rot_y(angle, category='torch', prepend_dim=True, device=None):
+	'''Rotate around y-axis by angle
+	Args:
+		category: 'torch' or 'numpy'
+		prepend_dim: prepend an extra dimension
+	Return: Rotation matrix with shape [1, 3, 3] (prepend_dim=True)
+	'''
+	tensor_0=torch.zeros(1).squeeze(0)
+	tensor_1=torch.ones(1).squeeze(0)
+	m = [
+		torch.stack([torch.cos(angle), tensor_0, torch.sin(angle), tensor_0]),
+		torch.stack([tensor_0, tensor_1, tensor_0, tensor_0]),
+		torch.stack([-torch.sin(angle), tensor_0, torch.cos(angle), tensor_0]),
+		torch.stack([tensor_0, tensor_0, tensor_0, tensor_1])
+		]
+	m = torch.stack(m)	
+	if category == 'torch':
+		if prepend_dim:
+			return m.unsqueeze(0)
+			# return torch.tensor(m, dtype=torch.float, device=device).unsqueeze(0)
+		else:
+			return m
+			# return torch.tensor(m, dtype=torch.float, device=device)
+	elif category == 'numpy':
+		if prepend_dim:
+			return np.expand_dims(m, 0)
+		else:
+			return m
+	else:
+		raise ValueError("category must be 'torch' or 'numpy'")
 
+def Rot_x(angle, category='torch', prepend_dim=True, device=None):
+	'''Rotate around x-axis by angle
+	Args:
+		category: 'torch' or 'numpy'
+		prepend_dim: prepend an extra dimension
+	Return: Rotation matrix with shape [1, 3, 3] (prepend_dim=True)
+	'''
+	tensor_0=torch.zeros(1).squeeze(0)
+	tensor_1=torch.ones(1).squeeze(0)
+	m = [
+		torch.stack([tensor_1, tensor_0, tensor_0, tensor_0]),
+		torch.stack([tensor_0, torch.cos(angle), -torch.sin(angle), tensor_0]),
+		torch.stack([tensor_0, torch.sin(angle), torch.cos(angle), tensor_0]),
+		torch.stack([tensor_0, tensor_0, tensor_0, tensor_1])
+		]
+	m = torch.stack(m)
+	if category == 'torch':
+		if prepend_dim:
+			return m.unsqueeze(0)
+			# return torch.tensor(m, dtype=torch.float, device=device).unsqueeze(0)
+		else:
+			return m
+			# return torch.tensor(m, dtype=torch.float, device=device)
+	elif category == 'numpy':
+		if prepend_dim:
+			return np.expand_dims(m, 0)
+		else:
+			return m
+	else:
+		raise ValueError("category must be 'torch' or 'numpy'")
+
+def Rot_z(angle, category='torch', prepend_dim=True, device=None):
+	'''Rotate around z-axis by angle
+	Args:
+		category: 'torch' or 'numpy'
+		prepend_dim: prepend an extra dimension
+	Return: Rotation matrix with shape [1, 3, 3] (prepend_dim=True)
+	'''
+	tensor_0=torch.zeros(1).squeeze(0)
+	tensor_1=torch.ones(1).squeeze(0)
+	m = [
+		torch.stack([torch.cos(angle), -torch.sin(angle), tensor_0, tensor_0]),
+		torch.stack([torch.sin(angle), torch.cos(angle), tensor_0, tensor_0]),
+		torch.stack([tensor_0, tensor_0, tensor_1, tensor_0]),
+		torch.stack([tensor_0, tensor_0, tensor_0, tensor_1])
+		]
+	m = torch.stack(m)
+	if category == 'torch':
+		if prepend_dim:
+			return m.unsqueeze(0)
+			# return torch.tensor(m, dtype=torch.float, device=device).unsqueeze(0)
+		else:
+			return m
+			# return torch.tensor(m, dtype=torch.float, device=device)
+	elif category == 'numpy':
+		if prepend_dim:
+			return np.expand_dims(m, 0)
+		else:
+			return m
+	else:
+		raise ValueError("category must be 'torch' or 'numpy'")
+	
 def convert_to_full_img_cam(
 		pare_cam, bbox_height, bbox_center,
 		img_w, img_h, focal_length):
