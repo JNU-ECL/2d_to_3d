@@ -141,7 +141,9 @@ class temp_dataset(Dataset):
 		temp_json=None
 		with open(json_path,'r') as f:
 			temp_json=json.loads(f.read())
-		trans=torch.tensor(temp_json['camera']['trans'])
+		trans=torch.tensor(temp_json['camera']['trans']) 
+		# trans -= torch.tensor([-5.2447, 141.3381, 33.3118])
+		# trans /= torch.tensor([29.0733, 12.2508, 55.9875])
 		rot=torch.tensor(temp_json['camera']['rot']) * np.pi / 180.0
 		return trans,rot
 
@@ -204,7 +206,7 @@ class temp_dataset(Dataset):
 		joints_2d = projection_temp_dataset(joints_3d,translation,rotation)
 		return joints_2d
 	
-	def get_fisheye_2d_joints(self,json_path):
+	def get_fisheye_2d_joints(self, json_path, resize=(512,512)):
 		"""
 		TODO:
 		Input:
@@ -227,10 +229,10 @@ class temp_dataset(Dataset):
 		kd = torch.tensor([-0.05631891929412012, -0.0038333424842925286,
 						-0.00024681888617308917, -0.00012153386798050158])
 
-		Mmaya = torch.tensor([[1, 0, 0, 0],
-							[0, -1, 0, 0],
-							[0, 0, -1, 0],
-							[0, 0, 0, 1]],dtype=torch.float64)
+		Mmaya = torch.tensor([[1., 0., 0., 0.],
+							[0., -1., 0., 0.],
+							[0., 0., -1., 0.],
+							[0., 0., 0., 1.]])
 			
 		Mf = transformations.euler_matrix(rotation[0],
 										rotation[1],
@@ -238,8 +240,8 @@ class temp_dataset(Dataset):
 										'sxyz')
 
 		Mf[0:3, 3] = translation
-		Mf = torch.linalg.inv(torch.tensor(Mf))
-		M = (Mmaya.T.float())@(Mf.float())
+		Mf = torch.linalg.inv(torch.tensor(Mf)).type(torch.FloatTensor)
+		M = (Mmaya.T)@(Mf)
 
 
 		Xj = M[0:3, 0:3]@(joints_3d) + M[0:3, 3:4]
@@ -255,21 +257,23 @@ class temp_dataset(Dataset):
 			kd
 		)
 		res = pts2d.squeeze(0)
-		H,W=800,1280
-		norm_res = res/np.array([W,H])
-		resized_res = norm_res * np.array([512,512])
-		return resized_res
+		if resize is not None:
+			H,W=800,1280
+			norm_res = res/torch.tensor([W,H])
+			res = norm_res * torch.tensor(resize)
+		return res
 	
 	# 가우시안 분포를 생성하는 함수
-	def generate_gaussian_heatmap(self,joint_location,image_size=[512,512], sigma=12):
+	def generate_gaussian_heatmap(self,joint_location,image_size=[64,64], sigma=2):
 		x, y = joint_location
+		x, y = np.array(x),np.array(y)
 		grid_y, grid_x = np.mgrid[0:image_size[1], 0:image_size[0]]
 		dist = (grid_x - x) ** 2 + (grid_y - y) ** 2
 		heatmap = np.exp(-dist / (2 * sigma**2))
 		return heatmap
 	
 	# heatmap GT 생성 함수
-	def generate_heatmap_gt(self, joint_location, image_size=[512,512],sigma=12):
+	def generate_heatmap_gt(self, joint_location, image_size=[64,64],sigma=2):
 		heatmap_gt = np.zeros((len(joint_location),image_size[1], image_size[0]), dtype=np.float32)
 		for i, joint in enumerate(joint_location):
 			heatmap_gt[i, :, :] = self.generate_gaussian_heatmap(joint, image_size, sigma)
@@ -288,7 +292,7 @@ class temp_dataset(Dataset):
 		heatmap_gt = generate_heatmap_gt(image_size, joint_location, sigma)
 		"""
 		res=None
-		fisheye_joint_labels = self.get_fisheye_2d_joints(json_path)
+		fisheye_joint_labels = self.get_fisheye_2d_joints(json_path,resize=(64,64))
 		res = self.generate_heatmap_gt(fisheye_joint_labels)
 		return res
 
@@ -314,11 +318,11 @@ class temp_dataset(Dataset):
 	   
 		image=self.get_rgba(img_path)
 		joints_3d=self.get_3d_joints(json_path)
-		joints_2d=self.get_2d_joints(json_path)
+		# joints_2d=self.get_2d_joints(json_path)
 		seg_image=self.get_rgba(seg_path)
 		camera_info=self.get_camera(json_path)
 		depth_map=self.get_depth(depth_path)
-		fisheye_joints_2d=self.get_fisheye_2d_joints(json_path)
+		fisheye_joints_2d=self.get_fisheye_2d_joints(json_path,resize=(512,512))
 		heatmap=self.get_gaussian_heatmap(json_path)
 
 		res={}
@@ -327,7 +331,7 @@ class temp_dataset(Dataset):
 				'info' : img_path,
 				'image': image,
 				'joints_3d' : joints_3d,
-				'joints_2d' : joints_2d, 
+				# 'joints_2d' : joints_2d, 
 				'seg_image': seg_image,
 				'depth' : depth_map,
 				'camera_info': camera_info,
