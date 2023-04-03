@@ -55,7 +55,11 @@ class TempModel(nn.Module):
 
 	def forward(self, x):
 		res = {}
-		depth_feature,heatmap=self.feature_model1(x)
+		image_ = x['image'].to(device)
+		depth_ = x['depth'].to(device)
+		heatmap_ = x['heatmap'].to(device)
+		
+		depth_feature,heatmap=self.feature_model1(image_)
 
 		# regressor1_res_dict=self.regressor1(heatmap) # [10,24,512,512]
 		regressor2_res_dict=self.regressor2(
@@ -216,12 +220,12 @@ class PoseResNet(nn.Module):
 		# self.avgpool = nn.AvgPool2d(3, stride=1,padding=1)
 
 		# used for deconv layers
-		self.deconv_layers = self._make_deconv_layer(
-			extra.NUM_DECONV_LAYERS, # 5
-			[256,128,64,32,1], # [256,128,64,32,3]
-			extra.NUM_DECONV_KERNELS, # [4,4,4,4,4]
-			self.inplanes,
-		)
+		# self.deconv_layers = self._make_deconv_layer(
+		# 	extra.NUM_DECONV_LAYERS, # 5
+		# 	[256,128,64,32,1], # [256,128,64,32,3]
+		# 	extra.NUM_DECONV_KERNELS, # [4,4,4,4,4]
+		# 	self.inplanes,
+		# )
 		# self.deconv_layers2 = self._make_deconv_layer(
 		#     extra.NUM_DECONV_LAYERS, # 5
 		#     [256,128,64,32,24], # 512x512 
@@ -247,12 +251,14 @@ class PoseResNet(nn.Module):
 			padding=1
 			),
 			nn.BatchNorm2d(24, momentum=BN_MOMENTUM),
-			nn.LeakyReLU(inplace=True)
+			nn.ReLU(inplace=True)
 		)
 
 		self.deconv_layer1 = self._make_deconv_layer2(2048,1024)
 		self.deconv_layer2 = self._make_deconv_layer2(1024,512)
-		# self.deconv_layer3 = self._make_deconv_layer2(512,256)
+		self.deconv_layer3 = self._make_deconv_layer2(512,256)
+		self.deconv_layer4 = self._make_deconv_layer2(256,128)
+		self.deconv_layer5 = self._make_deconv_layer2(128,1)
 		# self.conv_layer1 = nn.Sequential(
 		#     nn.Conv2d(512,24,3,1,1),
 		#     nn.BatchNorm2d(24, momentum=BN_MOMENTUM),
@@ -268,7 +274,7 @@ class PoseResNet(nn.Module):
 				padding=padding
 							   ),
 			nn.BatchNorm2d(out_planes, momentum=BN_MOMENTUM),
-			nn.LeakyReLU(inplace=True))
+			nn.ReLU(inplace=True))
 	
 	def _make_layer(self, block, planes, blocks, stride=1):
 		downsample = None
@@ -330,6 +336,7 @@ class PoseResNet(nn.Module):
 
 	def forward(self, x): # -> 3x512x512
 		x = self.conv1(x) # -> 64x256x256
+		x_ = x
 		x = self.bn1(x)
 		x = self.relu(x)
 		x = self.maxpool(x) # -> 64x128x128
@@ -340,7 +347,11 @@ class PoseResNet(nn.Module):
 		temp_x = self.layer4(x_2) # -> 2048x16x16
 
 		# x_avgpool = self.avgpool(temp_x).squeeze(2).squeeze(2)
-		depth_feature = self.deconv_layers(temp_x)
+		depth_feature = self.deconv_layer1(temp_x) 
+		depth_feature = self.deconv_layer2(depth_feature+x_2)
+		depth_feature = self.deconv_layer3(depth_feature+x_1)
+		depth_feature = self.deconv_layer4(depth_feature+x_0)
+		depth_feature = self.deconv_layer5(depth_feature)
 		# joint_heatmap = self.deconv_layers2(temp_x)
 		# x = self.final_layer(x)
 		heatmap_x = self.deconv_layer1(temp_x) # -> 1024x32x32
@@ -417,8 +428,8 @@ def get_pose_net(is_train, cfg=cfg,  **kwargs):
 
 	model = PoseResNet(block_class, layers, cfg, **kwargs)
 
-	if is_train and cfg.MODEL.INIT_WEIGHTS:
-		model.init_weights(cfg.MODEL.PRETRAINED)
+	# if is_train and cfg.MODEL.INIT_WEIGHTS:
+	# 	model.init_weights(cfg.MODEL.PRETRAINED)
 
 	return model
 
