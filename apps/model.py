@@ -60,11 +60,12 @@ class TempModel(nn.Module):
 		heatmap_ = x['heatmap'].to(device)
 		
 		depth_feature,heatmap=self.feature_model1(image_)
-
+		detached_depth = depth_feature.detach()
+		detached_heatmap = heatmap.detach()
 		# regressor1_res_dict=self.regressor1(heatmap) # [10,24,512,512]
 		regressor2_res_dict=self.regressor2(
-			heatmap,
-			depth_feature,
+			detached_heatmap,
+			detached_depth,
 			# init_cam_trans=regressor1_res_dict['pred_cam_trans'],
 			# init_cam_rot=regressor1_res_dict['pred_cam_rot']
 			)
@@ -220,12 +221,12 @@ class PoseResNet(nn.Module):
 		# self.avgpool = nn.AvgPool2d(3, stride=1,padding=1)
 
 		# used for deconv layers
-		# self.deconv_layers = self._make_deconv_layer(
-		# 	extra.NUM_DECONV_LAYERS, # 5
-		# 	[256,128,64,32,1], # [256,128,64,32,3]
-		# 	extra.NUM_DECONV_KERNELS, # [4,4,4,4,4]
-		# 	self.inplanes,
-		# )
+		self.deconv_layers = self._make_deconv_layer(
+			extra.NUM_DECONV_LAYERS, # 5
+			[256,128,64,32,1], # [256,128,64,32,3]
+			extra.NUM_DECONV_KERNELS, # [4,4,4,4,4]
+			self.inplanes,
+		)
 		# self.deconv_layers2 = self._make_deconv_layer(
 		#     extra.NUM_DECONV_LAYERS, # 5
 		#     [256,128,64,32,24], # 512x512 
@@ -256,9 +257,10 @@ class PoseResNet(nn.Module):
 
 		self.deconv_layer1 = self._make_deconv_layer2(2048,1024)
 		self.deconv_layer2 = self._make_deconv_layer2(1024,512)
-		self.deconv_layer3 = self._make_deconv_layer2(512,256)
-		self.deconv_layer4 = self._make_deconv_layer2(256,128)
-		self.deconv_layer5 = self._make_deconv_layer2(128,1)
+		self.deconv_layer3 = self._make_deconv_layer2(512,128)
+		self.deconv_layer4 = self._make_deconv_layer2(128,64)
+		self.deconv_layer5 = self._make_deconv_layer2(64,1)
+	
 		# self.conv_layer1 = nn.Sequential(
 		#     nn.Conv2d(512,24,3,1,1),
 		#     nn.BatchNorm2d(24, momentum=BN_MOMENTUM),
@@ -271,7 +273,8 @@ class PoseResNet(nn.Module):
 				out_channels=out_planes,
 				kernel_size=kernel,
 				stride=stride,
-				padding=padding
+				padding=padding,
+				bias=self.deconv_with_bias
 							   ),
 			nn.BatchNorm2d(out_planes, momentum=BN_MOMENTUM),
 			nn.ReLU(inplace=True))
@@ -347,11 +350,11 @@ class PoseResNet(nn.Module):
 		temp_x = self.layer4(x_2) # -> 2048x16x16
 
 		# x_avgpool = self.avgpool(temp_x).squeeze(2).squeeze(2)
-		depth_feature = self.deconv_layer1(temp_x) 
-		depth_feature = self.deconv_layer2(depth_feature+x_2)
-		depth_feature = self.deconv_layer3(depth_feature+x_1)
-		depth_feature = self.deconv_layer4(depth_feature+x_0)
-		depth_feature = self.deconv_layer5(depth_feature)
+		depth_feature = self.deconv_layer1(temp_x) # -> 1024x32x32
+		depth_feature = self.deconv_layer2(depth_feature+x_2) # -> 512x64x64
+		depth_feature = self.deconv_layer3(depth_feature+x_1) # -> 128x128x128
+		depth_feature = self.deconv_layer4(depth_feature) # -> 64x256x256
+		depth_feature = self.deconv_layer5(depth_feature) # -> 1x512x512
 		# joint_heatmap = self.deconv_layers2(temp_x)
 		# x = self.final_layer(x)
 		heatmap_x = self.deconv_layer1(temp_x) # -> 1024x32x32
