@@ -123,19 +123,19 @@ class temp_dataset(Dataset):
 	def get_rgba(self,img_path,resize=(512,512)):
 		img = cv2.imread(img_path,cv2.IMREAD_COLOR)
 		img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-		h,w,c = img.shape
-		c_h,c_w = h//2,w//2
-		radius = min(c_h,c_w) + 100
-		mask = np.zeros_like(img)
-		cv2.circle(mask, (c_w,c_h), radius, (255, 255, 255), -1)
-		cropped_img = cv2.bitwise_and(img, mask)
+		# h,w,c = img.shape
+		# c_h,c_w = h//2,w//2
+		# radius = min(c_h,c_w) + 100
+		# mask = np.zeros_like(img)
+		# cv2.circle(mask, (c_w,c_h), radius, (255, 255, 255), -1)
+		# cropped_img = cv2.bitwise_and(img, mask)
 		transform = transforms.Compose([
 			transforms.ToPILImage(),
 			transforms.Resize(resize, Image.BILINEAR),
 			transforms.ToTensor(),
-			# transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+			# transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
 		])
-		return transform(cropped_img)
+		return transform(img)
 		
 	def get_camera(self,json_path):
 		temp_json=None
@@ -149,21 +149,21 @@ class temp_dataset(Dataset):
 
 	def get_depth(self,depth_path,resize=(512,512)):
 		img = cv2.imread(depth_path,cv2.IMREAD_GRAYSCALE)
-		h,w = img.shape
-		c_h,c_w = h//2,w//2
-		radius = min(c_h,c_w) + 100
-		mask = np.zeros_like(img)
-		cv2.circle(mask, (c_w,c_h), radius, (255, 255, 255), -1)
-		cropped_img = cv2.bitwise_and(img, mask)
+		# h,w = img.shape
+		# c_h,c_w = h//2,w//2
+		# radius = min(c_h,c_w) + 100
+		# mask = np.zeros_like(img)
+		# cv2.circle(mask, (c_w,c_h), radius, (255, 255, 255), -1)
+		# cropped_img = cv2.bitwise_and(img, mask)
 		
 		transform = transforms.Compose([
 			transforms.ToPILImage(),
 			transforms.Resize(resize, Image.BILINEAR),
 			transforms.ToTensor(),
-			# transforms.Normalize((0.5), (0.5))
+			# transforms.Normalize((0.5), (0.5)),
 		])
 
-		return transform(cropped_img)
+		return transform(img)
 
 	def get_3d_joints(self,json_path):
 		"""
