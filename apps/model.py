@@ -53,7 +53,7 @@ class TempModel(nn.Module):
 		self.regressor1=Regressor1(24)
 		self.regressor2=Regressor2(1024,smpl_mean_params=SMPL_MEAN_PARAMS)
 
-	def forward(self, x):
+	def forward(self, x, epoch):
 		res = {}
 		image_ = x['image'].to(device)
 		depth_ = x['depth'].to(device)
@@ -63,13 +63,21 @@ class TempModel(nn.Module):
 		detached_depth = depth_feature.detach()
 		detached_heatmap = heatmap.detach()
 		# regressor1_res_dict=self.regressor1(heatmap) # [10,24,512,512]
-		regressor2_res_dict=self.regressor2(
-			detached_heatmap,
-			detached_depth,
-			# init_cam_trans=regressor1_res_dict['pred_cam_trans'],
-			# init_cam_rot=regressor1_res_dict['pred_cam_rot']
-			)
-		
+		if epoch == 0:
+			regressor2_res_dict=self.regressor2(
+				detached_heatmap,
+				detached_depth,
+				# init_cam_trans=regressor1_res_dict['pred_cam_trans'],
+				# init_cam_rot=regressor1_res_dict['pred_cam_rot']
+				)
+		else:
+			regressor2_res_dict=self.regressor2(
+				heatmap_,
+				depth_,
+				# init_cam_trans=regressor1_res_dict['pred_cam_trans'],
+				# init_cam_rot=regressor1_res_dict['pred_cam_rot']
+				)
+
 		res.update({
 			# 'regressor1_res_dict' : regressor1_res_dict,
    	  		'regressor2_res_dict' : regressor2_res_dict,
