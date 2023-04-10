@@ -23,12 +23,12 @@ from smplx.body_models import SMPL
 import numpy as np
 from geometry import rot6d_to_rotmat, projection_temp, rotation_matrix_to_angle_axis, create_euler
 # TODO : kaolin based renderer 구현할것 
-import kaolin as kal
+# import kaolin as kal
 
-SMPL_MEAN_PARAMS = r'C:\Users\user\Documents\GitHub\2d_to_3d\model\smpl_mean_params.npz'
-SMPL_MODEL_DIR = r'C:\Users\user\Documents\GitHub\2d_to_3d\model\smpl'
+SMPL_MEAN_PARAMS = '/workspace/2d_to_3d/model/smpl_mean_params.npz'
+SMPL_MODEL_DIR = '/workspace/2d_to_3d/model/smpl'
 use_cuda = torch.cuda.is_available()
-device = torch.device("cuda" if use_cuda else "cpu")
+# device = torch.device("cuda" if use_cuda else "cpu")
 
 class Resnet(nn.Module):
 	def __init__(self, num_classes=82):
@@ -55,9 +55,9 @@ class TempModel(nn.Module):
 
 	def forward(self, x, is_train):
 		res = {}
-		image_ = x['image'].to(device)
-		depth_ = x['depth'].to(device)
-		heatmap_ = x['heatmap'].to(device)
+		image_ = x['image']
+		depth_ = x['depth']
+		heatmap_ = x['heatmap']
 		
 		depth_feature,heatmap=self.feature_model1(image_)
 		detached_depth = depth_feature.detach()
@@ -89,7 +89,7 @@ class TempModel(nn.Module):
 
 
 args=EasyDict({
-	"cfg_file":r'C:\Users\user\Documents\GitHub\2d_to_3d\model\config\384x288_d256x3_adam_lr1e-3.yaml',
+	"cfg_file":r'/workspace/2d_to_3d/model/config/384x288_d256x3_adam_lr1e-3.yaml',
 	"misc":None
 })
 
@@ -547,9 +547,9 @@ class Regressor2(nn.Module):
 		self.procrustes={
 			'rotation': torch.tensor([[ 0.9999647 , -0.00426632,  0.00723915],
 										[ 0.00411011,  0.99976134,  0.02145697],
-										[-0.00732896, -0.02142646,  0.9997435 ]]).T.to(device),
+										[-0.00732896, -0.02142646,  0.9997435 ]]).T,
 			'scale': 92.3,
-			'translation': torch.tensor([  0.9100, 115.3339,  -2.7504]).to(device)
+			'translation': torch.tensor([  0.9100, 115.3339,  -2.7504])
 		}
 		self.fisheye_projection = FisheyeProjection()
 		self.flatten = nn.Flatten()
@@ -673,14 +673,15 @@ class Regressor2(nn.Module):
 
 		pred_vertices = pred_output.vertices
 		pred_joints = pred_output.joints[:,:24,:]
-		pred_joints = torch.einsum('bij,kj->bik',pred_joints,self.procrustes['rotation'])
+
+		pred_joints = torch.einsum('bij,kj->bik',pred_joints,self.procrustes['rotation'].to(pred_joints.device))
 		pred_joints *= self.procrustes['scale']
-		pred_joints += self.procrustes['translation']
+		pred_joints += self.procrustes['translation'].to(pred_joints.device)
 		# pred_smpl_joints = pred_output.smpl_joints
 		# pred_keypoints_2d = projection(pred_joints, pred_cam_trans)
 
-		pred_cam_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(device)
-		pred_cam_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(device)
+		pred_cam_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_joints.device)
+		pred_cam_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_joints.device)
 		pred_keypoints_2d = self.fisheye_projection(pred_joints, pred_cam_rot, pred_cam_trans)
 		pose = rotation_matrix_to_angle_axis(pred_rotmat.reshape(-1, 3, 3)).reshape(-1, 72)
 
@@ -726,7 +727,7 @@ class FisheyeProjection(nn.Module):
 		# TODO : K 스케일 확인할것 
 		self.K = torch.tensor([[352.59619801644876, 0.0, 0.0],
 				  [0.0, 352.70276325061578, 0.0],
-				  [654.6810228318458, 400.952228031277, 1.0]]).T.to(device)
+				  [654.6810228318458, 400.952228031277, 1.0]]).T
 		self.D = torch.tensor([-0.05631891929412012, -0.0038333424842925286,
 						-0.00024681888617308917, -0.00012153386798050158])
 		self.Mmaya = torch.tensor([[1, 0, 0, 0],
@@ -742,7 +743,7 @@ class FisheyeProjection(nn.Module):
 		Mf = torch.linalg.inv(rotate)
 		M = self.Mmaya.T.float()@Mf.float()
 		M = M.squeeze(1).to(points_3d.device)
-
+		self.K = self.K.to(points_3d.device)
 		# Transform points to camera coordinate system
 		points_homogeneous = torch.cat((points_3d, torch.ones((batch_size,24,1), device=points_3d.device)), dim=-1)
 		# P_ext = torch.cat((self.M[:3,:3], self.t), dim=-1)
@@ -761,6 +762,6 @@ class FisheyeProjection(nn.Module):
 		res = torch.matmul(points_distorted, self.K[:2, :2]) + self.K[:2, 2]
 		if resize is not None:
 			H,W=800,1280
-			norm_res = res/torch.tensor([W,H]).to(device)
-			res = norm_res * torch.tensor(resize).to(device)
+			norm_res = res/torch.tensor([W,H]).to(res.device)
+			res = norm_res * torch.tensor(resize).to(res.device)
 		return res
