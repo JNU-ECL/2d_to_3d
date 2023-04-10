@@ -14,7 +14,7 @@ from geometry import rot6d_to_rotmat, projection_temp, rotation_matrix_to_angle_
 from matplotlib import pyplot as plt
 import transformations
 import cv2
-
+import platform
 """import custom_utils
 from custom_utils import get_ocr, ocr_to_coco, coco_to_mask
 
@@ -37,6 +37,7 @@ TrainSet
 │   └── env 03
 └── ...
 """
+split_token = '/' if 'Linux' in platform.platform() else '\\'
 class BaseAugmentation:
 	def __init__(self, resize=[512,512],  **args):
 		self.transform = transforms.Compose([
@@ -54,12 +55,12 @@ def load_data(dataroot,data_type)->dict:
 	total_len=0
 	res={}
 	subjects={}
-	for folder in glob.glob(os.path.join(dataroot,'*')):
-		subject_name=folder.split('\\')[-1]
+	for folder in sorted(glob.glob(os.path.join(dataroot,'*'))):
+		subject_name=folder.split(split_token)[-1]
 		path_dict={}
-		for env in glob.glob(os.path.join(folder,'*')):
-			env_name=env.split('\\')[-1]
-			path_=glob.glob(os.path.join(env,'cam_down',data_type,extension))
+		for env in sorted(glob.glob(os.path.join(folder,'*'))):
+			env_name=env.split(split_token)[-1]
+			path_=sorted(glob.glob(os.path.join(env,'cam_down',data_type,extension)))
 			total_len+=len(path_)
 			path_dict.update({      
 				env_name:path_
