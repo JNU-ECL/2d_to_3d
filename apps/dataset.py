@@ -265,7 +265,7 @@ class temp_dataset(Dataset):
 		return res
 	
 	# 가우시안 분포를 생성하는 함수
-	def generate_gaussian_heatmap(self,joint_location,image_size=[64,64], sigma=3):
+	def generate_gaussian_heatmap(self,joint_location,image_size=[64,64], sigma=2):
 		x, y = joint_location
 		x, y = np.array(x),np.array(y)
 		grid_y, grid_x = np.mgrid[0:image_size[1], 0:image_size[0]]
@@ -274,7 +274,7 @@ class temp_dataset(Dataset):
 		return heatmap
 	
 	# heatmap GT 생성 함수
-	def generate_heatmap_gt(self, joint_location, image_size=[64,64],sigma=3):
+	def generate_heatmap_gt(self, joint_location, image_size=[64,64],sigma=2):
 		heatmap_gt = np.zeros((len(joint_location),image_size[1], image_size[0]), dtype=np.float32)
 		for i, joint in enumerate(joint_location):
 			heatmap_gt[i, :, :] = self.generate_gaussian_heatmap(joint, image_size, sigma)
