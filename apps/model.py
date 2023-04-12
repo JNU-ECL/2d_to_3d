@@ -48,7 +48,7 @@ class TempModel(nn.Module):
 
 			
 
-	def forward(self, x, is_train):
+	def forward(self, x, is_train, epoch):
 		res = {}
 		image_ = x['image']
 		depth_ = x['depth']
@@ -59,18 +59,26 @@ class TempModel(nn.Module):
 	
 		# regressor1_res_dict=self.regressor1(heatmap) # [10,24,512,512]
 		if is_train:
-			regressor2_res_dict=self.regressor2(
-				heatmap_,
-				depth_,
-				# pred_heatmap,
-				# pred_depth,
-				# trans_,
-				# rot_
-				)
+			if epoch==0:
+				regressor2_res_dict=self.regressor2(
+					# feature_dict['heatmap'],
+					# feature_dict['depthmap'],
+					heatmap_,
+					depth_,
+					# trans_,
+					# rot_
+					)
+			else:
+				regressor2_res_dict=self.regressor2(
+					feature_dict['heatmap'].detach(),
+					feature_dict['depthmap'].detach(),
+					# trans_,
+					# rot_
+					)	
 		else:
 			regressor2_res_dict=self.regressor2(
-				feature_dict['heatmap'],
-				feature_dict['depthmap'],
+				feature_dict['heatmap'].detach(),
+				feature_dict['depthmap'].detach(),
 				# pred_trans,
 				# pred_rot
 				)
@@ -363,7 +371,7 @@ class PoseResNet(nn.Module):
 		
 		depth_feature = self.deconv_layer1(temp_x) # -> 1024x32x32
 		depth_feature = self.deconv_layer2(depth_feature+x_2) # -> 512x64x64
-		depth_feature = self.deconv_layer3(depth_feature) # -> 128x128x128
+		depth_feature = self.deconv_layer3(depth_feature+x_1) # -> 128x128x128
 		depth_feature = self.deconv_layer4(depth_feature) # -> 64x256x256
 		depth_feature = self.deconv_layer5(depth_feature) # -> 1x512x512
 		# joint_heatmap = self.deconv_layers2(temp_x)
@@ -597,7 +605,7 @@ class Regressor2(nn.Module):
 
 		self.smpl = SMPL(
 			SMPL_MODEL_DIR,
-			batch_size=64,
+			batch_size=20,
 			create_transl=False
 		)
 
