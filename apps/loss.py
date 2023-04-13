@@ -163,7 +163,7 @@ class cam_loss(nn.Module):
 class heatmap_loss(nn.Module):
     def __init__(self) -> None:
         nn.Module.__init__(self)
-        self.loss = nn.MSELoss()
+        self.loss = nn.CrossEntropyLoss()
 
     def forward(self,x,label):
         res = None
