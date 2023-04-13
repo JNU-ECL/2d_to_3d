@@ -32,22 +32,23 @@ use_cuda = torch.cuda.is_available()
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str = None):
+	def __init__(self,pretrained_path:str = '/workspace/2d_to_3d/apps/last442.pth'):
 		super().__init__()
 		self.feature_model1 = get_pose_net(True)
 		self.regressor1=Regressor1(24)
-		self.regressor2=Regressor2(4096,smpl_mean_params=SMPL_MEAN_PARAMS)
+		self.regressor2=Regressor2(10240,smpl_mean_params=SMPL_MEAN_PARAMS)
+		# if pretrained_path:
+		# 	tempmodel_ckpt = torch.load(pretrained_path)
+		# 	tempmodel_dict = tempmodel_ckpt['model_state_dict']
+		# 	feature_model_dict = OrderedDict()
+		# 	for k,v in tempmodel_dict.items():
+		# 		if k.startswith('feature_model1.'):
+		# 			new_k = k[len('feature_model1.'):]
+		# 			feature_model_dict[new_k] = v
+		# 	self.feature_model1.load_state_dict(feature_model_dict)
 		if pretrained_path:
 			tempmodel_ckpt = torch.load(pretrained_path)
-			tempmodel_dict = tempmodel_ckpt['model_state_dict']
-			feature_model_dict = OrderedDict()
-			for k,v in tempmodel_dict.items():
-				if k.startswith('feature_model1.'):
-					new_k = k[len('feature_model1.'):]
-					feature_model_dict[new_k] = v
-			self.feature_model1.load_state_dict(feature_model_dict)
-
-			
+			self.load_state_dict(tempmodel_ckpt)
 
 	def forward(self, x, is_train, epoch):
 		res = {}
@@ -244,47 +245,46 @@ class PoseResNet(nn.Module):
 			extra.NUM_DECONV_KERNELS, # [4,4,4,4,4]
 			self.inplanes,
 		)
-		# self.deconv_layers2 = self._make_deconv_layer(
-		#     extra.NUM_DECONV_LAYERS, # 5
-		#     [256,128,64,32,24], # 512x512 
-		#     extra.NUM_DECONV_KERNELS, # [4,4,4,4,4]
-		#     self.inplanes,
-		# )
-
-		# self.final_layer = 
-		#     nn.Conv2d(
-		#     in_channels=extra.NUM_DECONV_FILTERS[-1],
-		#     out_channels=cfg.MODEL.NUM_JOINTS,
-		#     kernel_size=extra.FINAL_CONV_KERNEL,
-		#     stride=1,
-		#     padding=1 if extra.FINAL_CONV_KERNEL == 3 else 0
-		# )
-
-		self.final_layer =  nn.Sequential(
-			nn.Conv2d(
-			in_channels=512,
-			out_channels=24,
-			kernel_size=3,
-			stride=1,
-			padding=1
-			),
-			nn.BatchNorm2d(24, momentum=BN_MOMENTUM),
-			nn.ReLU(inplace=True)
+		self.deconv_layers2 = self._make_deconv_layer(
+			extra.NUM_DECONV_LAYERS, # 5
+			[256,128,64,32,24], # 512x512 
+			extra.NUM_DECONV_KERNELS, # [4,4,4,4,4]
+			self.inplanes,
 		)
+
+		self.final_layer = nn.Conv2d(
+			in_channels=extra.NUM_DECONV_FILTERS[-1],
+			out_channels=cfg.MODEL.NUM_JOINTS,
+			kernel_size=extra.FINAL_CONV_KERNEL,
+			stride=1,
+			padding=1 if extra.FINAL_CONV_KERNEL == 3 else 0
+		)
+
+		# self.final_layer =  nn.Sequential(
+		# 	nn.Conv2d(
+		# 	in_channels=512,
+		# 	out_channels=24,
+		# 	kernel_size=3,
+		# 	stride=1,
+		# 	padding=1
+		# 	),
+		# 	nn.BatchNorm2d(24, momentum=BN_MOMENTUM),
+		# 	nn.ReLU(inplace=True)
+		# )
 
 		self.deconv_layer1 = self._make_deconv_layer2(2048,1024)
 		self.deconv_layer2 = self._make_deconv_layer2(1024,512)
-		self.deconv_layer3 = self._make_deconv_layer2(512,128)
-		self.deconv_layer4 = self._make_deconv_layer2(128,64)
-		self.deconv_layer5 = self._make_deconv_layer2(64,1)
+		# self.deconv_layer3 = self._make_deconv_layer2(512,128)
+		# self.deconv_layer4 = self._make_deconv_layer2(128,64)
+		# self.deconv_layer5 = self._make_deconv_layer2(64,1)
 		
 		# self.deccam_trans = nn.Linear(2048, 3)
 		# self.deccam_rot = nn.Linear(2048, 3)
-		# self.conv_layer1 = nn.Sequential(
-		#     nn.Conv2d(512,24,3,1,1),
-		#     nn.BatchNorm2d(24, momentum=BN_MOMENTUM),
-		#     nn.LeakyReLU(inplace=True)
-		# )
+		self.conv_layer1 = nn.Sequential(
+			nn.Conv2d(512,24,3,1,1),
+			nn.BatchNorm2d(24, momentum=BN_MOMENTUM),
+			nn.LeakyReLU(inplace=True)
+		)
 	def _make_deconv_layer2(self,in_planes, out_planes, kernel=4, stride=2, padding=1):
 		return nn.Sequential(
 			nn.ConvTranspose2d(
@@ -293,7 +293,6 @@ class PoseResNet(nn.Module):
 				kernel_size=kernel,
 				stride=stride,
 				padding=padding,
-				bias=self.deconv_with_bias
 							   ),
 			nn.BatchNorm2d(out_planes, momentum=BN_MOMENTUM),
 			nn.ReLU(inplace=True),
@@ -372,18 +371,18 @@ class PoseResNet(nn.Module):
 
 		# x_avgpool = self.avgpool(temp_x).squeeze(2).squeeze(2)
 		
-		depth_feature = self.deconv_layer1(temp_x) # -> 1024x32x32
-		depth_feature = self.deconv_layer2(depth_feature+x_2) # -> 512x64x64
-		depth_feature = self.deconv_layer3(depth_feature+x_1) # -> 128x128x128
-		depth_feature = self.deconv_layer4(depth_feature) # -> 64x256x256
-		depth_feature = self.deconv_layer5(depth_feature) # -> 1x512x512
+		depth_feature = self.deconv_layers(temp_x) # -> 1024x32x32
+		# depth_feature = self.deconv_layer2(depth_feature+x_2) # -> 512x64x64
+		# depth_feature = self.deconv_layer3(depth_feature+x_1) # -> 128x128x128
+		# depth_feature = self.deconv_layer4(depth_feature) # -> 64x256x256
+		# depth_feature = self.deconv_layer5(depth_feature) # -> 1x512x512
 		# joint_heatmap = self.deconv_layers2(temp_x)
 		# x = self.final_layer(x)
 		heatmap_x = self.deconv_layer1(temp_x) # -> 1024x32x32
 		heatmap_x = self.deconv_layer2(heatmap_x+x_2) # -> 512x64x64
 		# heatmap_x = self.deconv_layer3(heatmap_x+x_1) # -> 256x128x128
-		heatmap_x = self.final_layer(heatmap_x) # -> 24x64x64
-		
+		# heatmap_x = self.final_layer(heatmap_x) # -> 24x64x64
+		heatmap_x = self.conv_layer1(heatmap_x)
 		# decam_trans = self.deccam_trans(x_avgpool)
 		# decam_rot = self.deccam_rot(x_avgpool)
 
@@ -529,8 +528,8 @@ class Regressor1(nn.Module):
 		# pred_joint_fisheye_2d = self.decjoint_fisheye(x).view(-1,65,2)
 		pred_trans = self.deccam_trans(x)
 		pred_rot = self.deccam_rot(x)
-		pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_trans)
-		pred_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_trans)
+		# pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_trans)
+		# pred_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_trans)
 		"""
 		if J_regressor is not None:
 			pred_joints = torch.matmul(J_regressor, pred_vertices)
@@ -572,8 +571,8 @@ class Regressor2(nn.Module):
 		self.conv_block5 = self._make_block(512,1024) #32 32->16 16
 		self.conv_block6 = self._make_block(1024,2048) #16 16->4 4 : 32768
 		
-		self.downsample_heat = self._make_downsample(24,512,4,20,0)
-		self.downsample_depth = self._make_downsample(1,512,17,33,0)
+		# self.downsample_heat = self._make_downsample(24,512,4,20,0)
+		# self.downsample_depth = self._make_downsample(1,512,17,33,0)
 
 		self.fc1 = nn.Linear(feat_dim + npose + 16 , 1024)
 		self.drop1 = nn.Dropout()
@@ -590,7 +589,7 @@ class Regressor2(nn.Module):
 
 		self.smpl = SMPL(
 			SMPL_MODEL_DIR,
-			batch_size=20,
+			batch_size=64,
 			create_transl=False
 		)
 
@@ -652,9 +651,9 @@ class Regressor2(nn.Module):
 		x = self.conv_block2(x)
 		x = self.conv_block3(x)
 		x = self.conv_block4(x)
-		x = self.conv_block5(x)
-		x = self.conv_block6(x)
-		x = self.avgpool(x) #2048
+		# x = self.conv_block5(x)
+		# x = self.conv_block6(x)
+		x = self.flatten(x) #8192
 
 		x2 = self.conv_block0(x2) #->256
 		x2 = self.conv_block1(x2) #->128
