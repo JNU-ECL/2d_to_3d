@@ -35,7 +35,8 @@ class TempModel(nn.Module):
 	def __init__(self,pretrained_path:str = None):
 		super().__init__()
 		self.feature_model1 = get_pose_net(True)
-		self.regressor2=Regressor2(576,smpl_mean_params=SMPL_MEAN_PARAMS)
+		self.regressor1=Regressor1(24)
+		self.regressor2=Regressor2(4096,smpl_mean_params=SMPL_MEAN_PARAMS)
 		if pretrained_path:
 			tempmodel_ckpt = torch.load(pretrained_path)
 			tempmodel_dict = tempmodel_ckpt['model_state_dict']
@@ -57,7 +58,7 @@ class TempModel(nn.Module):
 		
 		feature_dict=self.feature_model1(image_)
 	
-		# regressor1_res_dict=self.regressor1(heatmap) # [10,24,512,512]
+		
 		if is_train:
 			if epoch==0:
 				regressor2_res_dict=self.regressor2(
@@ -76,15 +77,17 @@ class TempModel(nn.Module):
 					# rot_
 					)	
 		else:
+			regressor1_res_dict=self.regressor1(feature_dict['heatmap'])
 			regressor2_res_dict=self.regressor2(
-				feature_dict['heatmap'].detach(),
-				feature_dict['depthmap'].detach(),
-				# pred_trans,
-				# pred_rot
+				feature_dict['heatmap'],
+				feature_dict['depthmap'],
+				init_cam_trans=regressor1_res_dict['pred_trans'],
+				init_cam_rot=regressor1_res_dict['pred_rot']
 				)
 
 		res.update({
-   	  		'regressor_dict' : regressor2_res_dict,
+			'regressor1_dict' : regressor1_res_dict,
+   	  		'regressor2_dict' : regressor2_res_dict,
 	 		'depth_feature' : feature_dict['depthmap'],
 	 		'heatmap' : feature_dict['heatmap'],
 			# 'pred_cam_trans' : pred_trans,
@@ -468,13 +471,9 @@ def get_pose_net(is_train, cfg=cfg,  **kwargs):
 	return model
 
 # Direct regression based
-# class Regressor1(nn.Module):
+class Regressor1(nn.Module):
 	def __init__(self, feat_dim):
 		super().__init__()
-		# self.conv1 = nn.Conv2d(24, 64, kernel_size=3, stride=1, padding=0,bias=False)
-		# self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
-		# self.relu = nn.ReLU(inplace=True)
-		# self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 		self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
 	   
   # TODO : kaolin renderer -> smpl render to masking loss      
@@ -491,15 +490,6 @@ def get_pose_net(is_train, cfg=cfg,  **kwargs):
 		nn.init.xavier_uniform_(self.deccam_trans.weight, gain=0.01)
 		nn.init.xavier_uniform_(self.deccam_rot.weight, gain=0.01)
 
-	   
-		# TODO : setup mean value by xr_egopose
-
-		# init_cam_trans = torch.from_numpy(mean_params['cam']).unsqueeze(0)
-		# init_cam_rot = torch.from_numpy(mean_params['cam']).unsqueeze(0)
-		# self.register_buffer('init_pose', init_pose)
-		# self.register_buffer('init_shape', init_shape)
-		# self.register_buffer('init_cam_trans', init_cam_trans)
-		# self.register_buffer('init_cam_rot', init_cam_rot)
 
 	def forward(self, x, init_joint_fisheye=None, init_cam_trans=None, init_cam_rot=None, n_iter=1, J_regressor=None):
 		batch_size = x.shape[0]
@@ -529,11 +519,6 @@ def get_pose_net(is_train, cfg=cfg,  **kwargs):
 			pred_rot = self.deccam_rot(xc) + pred_rot
 		"""
 		
-		# x = self.conv1(x)
-		# x = self.bn1(x)
-		# x = self.relu(x)
-		# x = self.maxpool(x)
-		
 		x = self.avgpool(x)
 		x = x.squeeze()
 		x = self.fc1(x)
@@ -544,8 +529,8 @@ def get_pose_net(is_train, cfg=cfg,  **kwargs):
 		# pred_joint_fisheye_2d = self.decjoint_fisheye(x).view(-1,65,2)
 		pred_trans = self.deccam_trans(x)
 		pred_rot = self.deccam_rot(x)
-		pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(device)
-		pred_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(device)
+		pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_trans)
+		pred_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_trans)
 		"""
 		if J_regressor is not None:
 			pred_joints = torch.matmul(J_regressor, pred_vertices)
@@ -590,7 +575,7 @@ class Regressor2(nn.Module):
 		self.downsample_heat = self._make_downsample(24,512,4,20,0)
 		self.downsample_depth = self._make_downsample(1,512,17,33,0)
 
-		self.fc1 = nn.Linear(feat_dim, 1024)
+		self.fc1 = nn.Linear(feat_dim + npose + 16 , 1024)
 		self.drop1 = nn.Dropout()
 		self.fc2 = nn.Linear(1024, 1024)
 		self.drop2 = nn.Dropout()
@@ -600,8 +585,8 @@ class Regressor2(nn.Module):
 		self.deccam_rot = nn.Linear(1024, 3)
 		nn.init.xavier_uniform_(self.decpose.weight, gain=0.01)
 		nn.init.xavier_uniform_(self.decshape.weight, gain=0.01)
-		# nn.init.xavier_uniform_(self.deccam_trans.weight, gain=0.01)
-		# nn.init.xavier_uniform_(self.deccam_rot.weight, gain=0.01)
+		nn.init.xavier_uniform_(self.deccam_trans.weight, gain=0.01)
+		nn.init.xavier_uniform_(self.deccam_rot.weight, gain=0.01)
 
 		self.smpl = SMPL(
 			SMPL_MODEL_DIR,
@@ -609,15 +594,15 @@ class Regressor2(nn.Module):
 			create_transl=False
 		)
 
-		# mean_params = np.load(smpl_mean_params)
-		# init_pose = torch.from_numpy(mean_params['pose'][:]).unsqueeze(0)
-		# init_shape = torch.from_numpy(mean_params['shape'][:].astype('float32')).unsqueeze(0)
-		# init_cam_trans = torch.from_numpy(mean_params['cam']).unsqueeze(0)
-		# init_cam_rot = torch.from_numpy(mean_params['cam']).unsqueeze(0)
-		# self.register_buffer('init_pose', init_pose)
-		# self.register_buffer('init_shape', init_shape)
-		# self.register_buffer('init_cam_trans', init_cam_trans)
-		# self.register_buffer('init_cam_rot', init_cam_rot)
+		mean_params = np.load(smpl_mean_params)
+		init_pose = torch.from_numpy(mean_params['pose'][:]).unsqueeze(0)
+		init_shape = torch.from_numpy(mean_params['shape'][:].astype('float32')).unsqueeze(0)
+		init_cam_trans = torch.from_numpy(mean_params['cam']).unsqueeze(0)
+		init_cam_rot = torch.from_numpy(mean_params['cam']).unsqueeze(0)
+		self.register_buffer('init_pose', init_pose)
+		self.register_buffer('init_shape', init_shape)
+		self.register_buffer('init_cam_trans', init_cam_trans)
+		self.register_buffer('init_cam_rot', init_cam_rot)
 
 	def _make_downsample(self, in_channels, out_channels, kernel, stride, padding):
 		return nn.Sequential(
@@ -631,21 +616,21 @@ class Regressor2(nn.Module):
 			nn.LeakyReLU(inplace=True)
 		)
 
-	def forward(self, heatmap, depthmap, init_cam_trans=None, init_cam_rot=None, n_iter=1, J_regressor=None):
+	def forward(self, heatmap, depthmap, init_pose=None, init_shape=None, init_cam_trans=None, init_cam_rot=None, n_iter=1, J_regressor=None):
 		x=heatmap # 24 64 64
 		x2=depthmap # 1 512 512
 
 
 		batch_size = x.shape[0]
 
-		# if init_pose is None:
-		# 	init_pose = self.init_pose.expand(batch_size, -1)
-		# if init_shape is None:
-		# 	init_shape = self.init_shape.expand(batch_size, -1)
-		# if init_cam_trans is None:
-		# 	init_cam_trans = self.init_cam_trans.expand(batch_size, -1)
-		# if init_cam_rot is None:
-		# 	init_cam_rot = self.init_cam_rot.expand(batch_size, -1)
+		if init_pose is None:
+			init_pose = self.init_pose.expand(batch_size, -1)
+		if init_shape is None:
+			init_shape = self.init_shape.expand(batch_size, -1)
+		if init_cam_trans is None:
+			init_cam_trans = self.init_cam_trans.expand(batch_size, -1)
+		if init_cam_rot is None:
+			init_cam_rot = self.init_cam_rot.expand(batch_size, -1)
 
 		# pred_pose = init_pose
 		# pred_shape = init_shape
@@ -655,34 +640,36 @@ class Regressor2(nn.Module):
 
 		# pred_trans = pred_trans - torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_trans.device)
 		# pred_trans = pred_trans / torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_trans.device)
-		
+		pred_pose = init_pose
+		pred_shape = init_shape
+		pred_cam_trans = init_cam_trans
+		pred_cam_rot = init_cam_rot
 
 		residual_x = x # 24x64x64
 		residual_x2 = x2
 
-		x = self.conv_block1(x) # 24x64x64->64x32x32
-		x = self.conv_block2(x) # 64x32x32->128x16x16
-		x = self.conv_block3(x) # 128x16x16->256x8x8
-		x = self.conv_block4(x) # 256x8x8->512x4x4
-		residual_x = self.downsample_heat(residual_x)
-		x = self.avgpool(x+residual_x) # 512
-		# x = self.avgpool(x) # 512
+		x = self.conv_block1(x)
+		x = self.conv_block2(x)
+		x = self.conv_block3(x)
+		x = self.conv_block4(x)
+		x = self.conv_block5(x)
+		x = self.conv_block6(x)
+		x = self.avgpool(x) #2048
 
-		x2 = self.conv_block0(x2) #1x512x512->24x256x256 
-		x2 = self.conv_block1(x2) #24x256x256->64x128x128
-		# x2 = self.conv_block2(x2) #64x128x128->128x64x64
-		# x2 = self.conv_block3(x2) #128x64x64->256x32x32
-		# x2 = self.conv_block4(x2) #256x32x32->512x16x16
-		# # x2 = self.conv_block5(x2) 
-		# residual_x2 = self.downsample_depth(residual_x2)
-		# x2 = self.avgpool(x2+residual_x2) # 512
-		x2 = self.avgpool(x2) # 64
+		x2 = self.conv_block0(x2) #->256
+		x2 = self.conv_block1(x2) #->128
+		x2 = self.conv_block2(x2) #->64
+		x2 = self.conv_block3(x2) #->32
+		x2 = self.conv_block4(x2)
+		x2 = self.conv_block5(x2)
+		x2 = self.conv_block6(x2)
+		x2 = self.avgpool(x2) #2048
 
 		x = x.squeeze()
 		x2 = x2.squeeze()
 
 		# for i in range(n_iter):
-		xc = torch.cat([x, x2], 1)
+		xc = torch.cat([x, x2, pred_pose, pred_shape, pred_cam_trans, pred_cam_rot], 1)
 		xc = self.fc1(xc)
 		xc = self.drop1(xc)
 		xc = self.fc2(xc)
@@ -728,8 +715,8 @@ class Regressor2(nn.Module):
 			'kp_3d'  : pred_joints,
 			# 'smpl_kp_3d' : pred_smpl_joints,
 			'rotmat' : pred_rotmat,
-			'pred_cam_trans' : pred_trans,
-			'pred_cam_rot' : pred_rot,
+			'pred_trans' : pred_trans,
+			'pred_rot' : pred_rot,
 			# 'pred_shape': pred_shape,
 			# 'pred_pose': pred_pose,
 		}
