@@ -32,16 +32,16 @@ use_cuda = torch.cuda.is_available()
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str = '/workspace/2d_to_3d/apps/exp137/last.pth'):
+	def __init__(self,pretrained_path:str = None):
 		super().__init__()
 		self.feature_model1 = get_pose_net(True)
-		self.regressor2=Regressor2(8704,smpl_mean_params=SMPL_MEAN_PARAMS)
+		self.regressor2=Regressor2(1072,smpl_mean_params=SMPL_MEAN_PARAMS)
 		
 		if pretrained_path:
 			tempmodel_ckpt = torch.load(pretrained_path)
 			self.load_state_dict(tempmodel_ckpt)
 
-	def forward(self, x, is_train):
+	def forward(self, x, is_train,epoch):
 		res = {}
 		image_ = x['image']
 		depth_ = x['depth']
@@ -52,14 +52,20 @@ class TempModel(nn.Module):
 	
 		
 		if is_train:
-			regressor2_res_dict=self.regressor2(
-				heatmap_,
-				depth_,
+			if epoch==0:
+				regressor2_res_dict=self.regressor2(
+					heatmap_,
+					depth_,
+					)
+			else:
+				regressor2_res_dict=self.regressor2(
+					feature_dict['heatmap'],
+					feature_dict['depthmap'],
 				)
 		else:
 			regressor2_res_dict=self.regressor2(
-				feature_dict['heatmap'].detach(),
-				feature_dict['depthmap'].detach(),
+				feature_dict['heatmap'],
+				feature_dict['depthmap'],
 				)
 
 		res.update({
@@ -425,8 +431,8 @@ class Regressor2(nn.Module):
 		self.conv_block2 = self._make_block(64,128) #256 256->128 128
 		self.conv_block3 = self._make_block(128,256) #128 128->64 64
 		self.conv_block4 = self._make_block(256,512) #64 64->32 32
-		self.conv_block5 = self._make_block(512,1024) #32 32->16 16
-		self.conv_block6 = self._make_block(1024,2048) #16 16->4 4 : 32768
+		# self.conv_block5 = self._make_block(512,1024) #32 32->16 16
+		# self.conv_block6 = self._make_block(1024,2048) #16 16->4 4 : 32768
 		
 		self.downsample_heat = self._make_downsample(24,512,4,20,0)
 		self.downsample_depth = self._make_downsample(1,512,17,33,0)
@@ -450,15 +456,15 @@ class Regressor2(nn.Module):
 			create_transl=False
 		)
 
-		mean_params = np.load(smpl_mean_params)
-		init_pose = torch.from_numpy(mean_params['pose'][:]).unsqueeze(0)
-		init_shape = torch.from_numpy(mean_params['shape'][:].astype('float32')).unsqueeze(0)
-		init_cam_trans = torch.from_numpy(mean_params['cam']).unsqueeze(0)
-		init_cam_rot = torch.from_numpy(mean_params['cam']).unsqueeze(0)
-		self.register_buffer('init_pose', init_pose)
-		self.register_buffer('init_shape', init_shape)
-		self.register_buffer('init_cam_trans', init_cam_trans)
-		self.register_buffer('init_cam_rot', init_cam_rot)
+		# mean_params = np.load(smpl_mean_params)
+		# init_pose = torch.from_numpy(mean_params['pose'][:]).unsqueeze(0)
+		# init_shape = torch.from_numpy(mean_params['shape'][:].astype('float32')).unsqueeze(0)
+		# init_cam_trans = torch.from_numpy(mean_params['cam']).unsqueeze(0)
+		# init_cam_rot = torch.from_numpy(mean_params['cam']).unsqueeze(0)
+		# self.register_buffer('init_pose', init_pose)
+		# self.register_buffer('init_shape', init_shape)
+		# self.register_buffer('init_cam_trans', init_cam_trans)
+		# self.register_buffer('init_cam_rot', init_cam_rot)
 
 	def _make_downsample(self, in_channels, out_channels, kernel, stride, padding):
 		return nn.Sequential(
@@ -475,20 +481,28 @@ class Regressor2(nn.Module):
 	def forward(self, heatmap, depthmap):
 		x=heatmap # 24 64 64
 		x2=depthmap # 1 512 512
-
-
+		# TODO : heatmap 입력 argmax로 차원당 1 하나씩
 		batch_size = x.shape[0]
 
-	
+		max_values, max_indices = torch.max(heatmap.view(batch_size,24,-1), dim=2)
+		y_coords = max_indices // 64
+		x_coords = max_indices % 64
+
+
+		coords = torch.stack((x_coords, y_coords), dim=2)
+		coords = self.flatten(coords) # 10x24x2
+
+
 		residual_x = x # 24x64x64
 		residual_x2 = x2
+	
 
 		x = self.conv_block1(x)
 		x = self.conv_block2(x)
 		x = self.conv_block3(x)
 		x = self.conv_block4(x)
 		residual_x = self.downsample_heat(residual_x)
-		x = self.flatten(x) #8192
+		x = self.avgpool(x) #512
 
 		x2 = self.conv_block0(x2) #->256
 		x2 = self.conv_block1(x2) #->128
@@ -502,7 +516,7 @@ class Regressor2(nn.Module):
 		x2 = x2.squeeze()
 
 		# for i in range(n_iter):
-		xc = torch.cat([x, x2], 1)
+		xc = torch.cat([x, x2, coords], 1)
 		xc = self.fc1(xc)
 		xc = self.drop1(xc)
 		xc = self.fc2(xc)
