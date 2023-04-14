@@ -52,11 +52,16 @@ class TempModel(nn.Module):
 	
 		
 		if is_train:
-			if epoch==0:
+			if epoch<2:
 				regressor2_res_dict=self.regressor2(
 					heatmap_,
 					depth_,
 					)
+			elif epoch<4:
+				regressor2_res_dict=self.regressor2(
+					feature_dict['heatmap'].detach(),
+					feature_dict['depthmap'].detach(),
+				)
 			else:
 				regressor2_res_dict=self.regressor2(
 					feature_dict['heatmap'],
