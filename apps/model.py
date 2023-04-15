@@ -32,14 +32,23 @@ use_cuda = torch.cuda.is_available()
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str = None):
+	def __init__(self,pretrained_path:str = '/workspace/2d_to_3d/apps/exp156/last.pth'):
 		super().__init__()
+		only_resnet=True
 		self.feature_model1 = get_pose_net(True)
-		self.regressor2=Regressor2(1072,smpl_mean_params=SMPL_MEAN_PARAMS)
+		self.regressor2=Regressor2(depthmapfeat_dim=512,heatmapfeat_dim=512,smpl_mean_params=SMPL_MEAN_PARAMS)
 		
 		if pretrained_path:
 			tempmodel_ckpt = torch.load(pretrained_path)
-			self.load_state_dict(tempmodel_ckpt)
+			if only_resnet:
+				feature_model1_state_dict = OrderedDict()
+				for k,v in tempmodel_ckpt.items():
+					if k.startswith('featrue_model1.'):
+						new_key = k[len('feature_model1.'):]
+						feature_model1_state_dict[new_key] = v
+				self.feature_model1.load_state_dict(feature_model1_state_dict)
+			else:
+				self.load_state_dict(tempmodel_ckpt)
 
 	def forward(self, x, is_train,epoch):
 		res = {}
@@ -52,20 +61,9 @@ class TempModel(nn.Module):
 	
 		
 		if is_train:
-			if epoch<2:
-				regressor2_res_dict=self.regressor2(
-					heatmap_,
-					depth_,
-					)
-			elif epoch<4:
-				regressor2_res_dict=self.regressor2(
-					feature_dict['heatmap'].detach(),
-					feature_dict['depthmap'].detach(),
-				)
-			else:
-				regressor2_res_dict=self.regressor2(
-					feature_dict['heatmap'],
-					feature_dict['depthmap'],
+			regressor2_res_dict=self.regressor2(
+				feature_dict['heatmap'],
+				feature_dict['depthmap'],
 				)
 		else:
 			regressor2_res_dict=self.regressor2(
@@ -417,7 +415,7 @@ def get_pose_net(is_train, cfg=cfg,  **kwargs):
 	return model
 
 class Regressor2(nn.Module):
-	def __init__(self, feat_dim, smpl_mean_params):
+	def __init__(self, heatmapfeat_dim, depthmapfeat_dim, smpl_mean_params):
 		super().__init__()
 
 		npose = 24 * 6
@@ -436,20 +434,51 @@ class Regressor2(nn.Module):
 		self.conv_block2 = self._make_block(64,128) #256 256->128 128
 		self.conv_block3 = self._make_block(128,256) #128 128->64 64
 		self.conv_block4 = self._make_block(256,512) #64 64->32 32
+
+		self.conv_block0_ = self._make_block(1,24)
+		self.conv_block1_ = self._make_block(24,64) #512 512->256 256
+		self.conv_block2_ = self._make_block(64,128) #256 256->128 128
+		self.conv_block3_ = self._make_block(128,256) #128 128->64 64
+		self.conv_block4_ = self._make_block(256,512) #64 64->32 32
 		# self.conv_block5 = self._make_block(512,1024) #32 32->16 16
 		# self.conv_block6 = self._make_block(1024,2048) #16 16->4 4 : 32768
 		
 		self.downsample_heat = self._make_downsample(24,512,4,20,0)
 		self.downsample_depth = self._make_downsample(1,512,17,33,0)
 
-		self.fc1 = nn.Linear(feat_dim, 1024)
+		self.bilinear_layer_pose = nn.ModuleList()
+		self.bilinear_layer_shape = nn.ModuleList()
+
+		for _ in range(2):
+			block = self._make_bilinear(1024)
+			self.bilinear_layer_pose.append(block)
+
+		for _ in range(1):
+			block = self._make_bilinear(1024)
+			self.bilinear_layer_shape.append(block)	
+
+		self.fc1 = nn.Linear(heatmapfeat_dim + 24*2, 1024)
+		self.bn1 = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
+		self.relu1 = nn.ReLU()
 		self.drop1 = nn.Dropout()
-		self.fc2 = nn.Linear(1024, 1024)
-		self.drop2 = nn.Dropout()
+		# self.fc2 = nn.Linear(1024, 1024)
+		# self.bn2 = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
+		# self.relu2 = nn.ReLU()
+		# self.drop2 = nn.Dropout()
+
+		self.fc1_ = nn.Linear(depthmapfeat_dim, 1024)
+		self.bn1_ = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
+		self.relu1_ = nn.ReLU()
+		self.drop1_ = nn.Dropout()
+		# self.fc2_ = nn.Linear(1024, 1024)
+		# self.bn2_ = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
+		# self.relu2_ = nn.ReLU()
+		# self.drop2_ = nn.Dropout()
+
 		self.decpose = nn.Linear(1024, npose)
 		self.decshape = nn.Linear(1024, 10)
-		self.deccam_trans = nn.Linear(1024, 3)
-		self.deccam_rot = nn.Linear(1024, 3)
+		self.deccam_trans = nn.Linear(1024+24*2, 3)
+		self.deccam_rot = nn.Linear(1024+24*2, 3)
 		nn.init.xavier_uniform_(self.decpose.weight, gain=0.01)
 		nn.init.xavier_uniform_(self.decshape.weight, gain=0.01)
 		nn.init.xavier_uniform_(self.deccam_trans.weight, gain=0.01)
@@ -471,6 +500,17 @@ class Regressor2(nn.Module):
 		# self.register_buffer('init_cam_trans', init_cam_trans)
 		# self.register_buffer('init_cam_rot', init_cam_rot)
 
+	def _make_bilinear(self,in_dim):
+		return nn.Sequential(
+			nn.Linear(in_dim, 1024),
+			nn.BatchNorm1d(1024,momentum=BN_MOMENTUM),
+			nn.ReLU(),
+			nn.Dropout(),
+			nn.Linear(1024, 1024),
+			nn.BatchNorm1d(1024,momentum=BN_MOMENTUM),
+			nn.ReLU(),
+			nn.Dropout(),
+		)
 	def _make_downsample(self, in_channels, out_channels, kernel, stride, padding):
 		return nn.Sequential(
 			nn.Conv2d(in_channels=in_channels,
@@ -480,7 +520,7 @@ class Regressor2(nn.Module):
 					  padding=padding
 					  ),
 			nn.BatchNorm2d(out_channels,momentum=BN_MOMENTUM),
-			nn.LeakyReLU(inplace=True)
+			nn.ReLU(inplace=True)
 		)
 
 	def forward(self, heatmap, depthmap):
@@ -509,27 +549,46 @@ class Regressor2(nn.Module):
 		residual_x = self.downsample_heat(residual_x)
 		x = self.avgpool(x) #512
 
-		x2 = self.conv_block0(x2) #->256
-		x2 = self.conv_block1(x2) #->128
-		x2 = self.conv_block2(x2) #->64
-		x2 = self.conv_block3(x2) #->32
-		x2 = self.conv_block4(x2)
+		x2 = self.conv_block0_(x2) #->256
+		x2 = self.conv_block1_(x2) #->128
+		x2 = self.conv_block2_(x2) #->64
+		x2 = self.conv_block3_(x2) #->32
+		x2 = self.conv_block4_(x2)
 		residual_x2 = self.downsample_depth(residual_x2)
 		x2 = self.avgpool(x2+residual_x2) # 512
 
-		x = x.squeeze()
-		x2 = x2.squeeze()
+		heatmap_feat = x.squeeze()
+		depthmap_feat = x2.squeeze()
 
-		# for i in range(n_iter):
-		xc = torch.cat([x, x2, coords], 1)
-		xc = self.fc1(xc)
-		xc = self.drop1(xc)
-		xc = self.fc2(xc)
-		xc = self.drop2(xc)
-		pred_pose = self.decpose(xc)
-		pred_shape = self.decshape(xc)
-		pred_trans = self.deccam_trans(xc)
-		pred_rot = self.deccam_rot(xc) 
+		pred_pose = torch.cat([heatmap_feat, coords], 1) # 512+24*2
+		pred_pose = self.fc1(pred_pose)
+		pred_pose = self.bn1(pred_pose)
+		pred_pose = self.relu1(pred_pose)
+		pred_pose = self.drop1(pred_pose)
+		pose_residual = pred_pose
+
+		for layer in self.bilinear_layer_pose:
+			pred_pose = layer(pred_pose)
+			pred_pose += pose_residual
+
+
+		pred_shape = torch.cat([depthmap_feat], 1) # 512
+		pred_shape = self.fc1_(pred_shape)
+		pred_shape = self.bn1_(pred_shape)
+		pred_shape = self.relu1_(pred_shape)
+		pred_shape = self.drop1_(pred_shape)
+		shape_residual = pred_shape
+		
+		for layer in self.bilinear_layer_shape:
+			pred_shape = layer(pred_shape)
+			pred_shape += shape_residual
+
+		pred_pose = self.decpose(pred_pose)
+		pred_shape = self.decshape(pred_shape)
+
+		total_feat = torch.cat([heatmap_feat, coords, depthmap_feat], 1)
+		pred_trans = self.deccam_trans(total_feat)
+		pred_rot = self.deccam_rot(total_feat) 
 
 		pred_rotmat = rot6d_to_rotmat(pred_pose).view(batch_size, 24, 3, 3)
 
