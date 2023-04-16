@@ -201,7 +201,7 @@ class temp_dataset(Dataset):
 		h_fov = torch.tensor(temp_json['camera']['cam_fov'])
 		translation = torch.tensor(temp_json['camera']['trans'])
 		rotation = torch.tensor(temp_json['camera']['rot']) * np.pi / 180.0
-		joints_3d= self.get_3d_joints(json_path)
+		joints_3d = self.get_3d_joints(json_path)
 		
 		
 		joints_2d = projection_temp_dataset(joints_3d,translation,rotation)

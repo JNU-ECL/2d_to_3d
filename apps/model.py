@@ -32,9 +32,9 @@ use_cuda = torch.cuda.is_available()
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str = '/workspace/2d_to_3d/apps/exp156/last.pth'):
+	def __init__(self,pretrained_path:str =None):
 		super().__init__()
-		only_resnet=True
+		only_resnet=False
 		self.feature_model1 = get_pose_net(True)
 		self.regressor2=Regressor2(depthmapfeat_dim=512,heatmapfeat_dim=512,smpl_mean_params=SMPL_MEAN_PARAMS)
 		
@@ -62,13 +62,13 @@ class TempModel(nn.Module):
 		
 		if is_train:
 			regressor2_res_dict=self.regressor2(
-				feature_dict['heatmap'],
-				feature_dict['depthmap'],
+		        feature_dict['heatmap'].detach(),
+				feature_dict['depthmap'].detach(),
 				)
 		else:
 			regressor2_res_dict=self.regressor2(
-				feature_dict['heatmap'],
-				feature_dict['depthmap'],
+				feature_dict['heatmap'].detach(),
+				feature_dict['depthmap'].detach(),
 				)
 
 		res.update({
@@ -457,7 +457,7 @@ class Regressor2(nn.Module):
 			block = self._make_bilinear(1024)
 			self.bilinear_layer_shape.append(block)	
 
-		self.fc1 = nn.Linear(heatmapfeat_dim + 24*2, 1024)
+		self.fc1 = nn.Linear(heatmapfeat_dim, 1024)
 		self.bn1 = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
 		self.relu1 = nn.ReLU()
 		self.drop1 = nn.Dropout()
@@ -477,8 +477,8 @@ class Regressor2(nn.Module):
 
 		self.decpose = nn.Linear(1024, npose)
 		self.decshape = nn.Linear(1024, 10)
-		self.deccam_trans = nn.Linear(1024+24*2, 3)
-		self.deccam_rot = nn.Linear(1024+24*2, 3)
+		self.deccam_trans = nn.Linear(1024, 3)
+		self.deccam_rot = nn.Linear(1024, 3)
 		nn.init.xavier_uniform_(self.decpose.weight, gain=0.01)
 		nn.init.xavier_uniform_(self.decshape.weight, gain=0.01)
 		nn.init.xavier_uniform_(self.deccam_trans.weight, gain=0.01)
@@ -529,13 +529,13 @@ class Regressor2(nn.Module):
 		# TODO : heatmap 입력 argmax로 차원당 1 하나씩
 		batch_size = x.shape[0]
 
-		max_values, max_indices = torch.max(heatmap.view(batch_size,24,-1), dim=2)
-		y_coords = max_indices // 64
-		x_coords = max_indices % 64
+		# max_values, max_indices = torch.max(heatmap.view(batch_size,24,-1), dim=2)
+		# y_coords = max_indices // 64
+		# x_coords = max_indices % 64
 
 
-		coords = torch.stack((x_coords, y_coords), dim=2)
-		coords = self.flatten(coords) # 10x24x2
+		# coords = torch.stack((x_coords, y_coords), dim=2)
+		# coords = self.flatten(coords) # 10x24x2
 
 
 		residual_x = x # 24x64x64
@@ -560,7 +560,7 @@ class Regressor2(nn.Module):
 		heatmap_feat = x.squeeze()
 		depthmap_feat = x2.squeeze()
 
-		pred_pose = torch.cat([heatmap_feat, coords], 1) # 512+24*2
+		pred_pose = torch.cat([heatmap_feat], 1) # 512
 		pred_pose = self.fc1(pred_pose)
 		pred_pose = self.bn1(pred_pose)
 		pred_pose = self.relu1(pred_pose)
@@ -586,7 +586,7 @@ class Regressor2(nn.Module):
 		pred_pose = self.decpose(pred_pose)
 		pred_shape = self.decshape(pred_shape)
 
-		total_feat = torch.cat([heatmap_feat, coords, depthmap_feat], 1)
+		total_feat = torch.cat([heatmap_feat, depthmap_feat], 1)
 		pred_trans = self.deccam_trans(total_feat)
 		pred_rot = self.deccam_rot(total_feat) 
 
