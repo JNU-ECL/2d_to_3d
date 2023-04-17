@@ -62,7 +62,7 @@ class TempModel(nn.Module):
 		
 		if is_train:
 			regressor2_res_dict=self.regressor2(
-		        feature_dict['heatmap'].detach(),
+				feature_dict['heatmap'].detach(),
 				feature_dict['depthmap'].detach(),
 				)
 		else:
@@ -426,6 +426,10 @@ class Regressor2(nn.Module):
 			'scale': 92.3,
 			'translation': torch.tensor([  0.9100, 115.3339,  -2.7504])
 		}
+		self.Mmaya = torch.tensor([[1., 0., 0., 0.],
+							[0., -1., 0., 0.],
+							[0., 0., -1., 0.],
+							[0., 0., 0., 1.]])
 		self.flatten = nn.Flatten()
 		self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
 
@@ -602,14 +606,27 @@ class Regressor2(nn.Module):
 		pred_vertices = pred_output.vertices
 		pred_joints = pred_output.joints[:,:24,:]
 
+
+		
+		pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_joints.device)
+		pred_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_joints.device)
+		
 		pred_joints = torch.einsum('bij,kj->bik',pred_joints,self.procrustes['rotation'].to(pred_joints.device))
 		pred_joints *= self.procrustes['scale']
-		pred_joints += self.procrustes['translation'].to(pred_joints.device)
+		pred_joints += self.procrustes['translation'].to(pred_joints.device) # world coord
+		
+		cam_intrinsic = create_euler(pred_rot).view(batch_size,4,4)
+		cam_intrinsic[:,:3,3] = pred_trans
+		cam_intrinsic = torch.linalg.inv(cam_intrinsic)
+		cam_intrinsic = self.Mmaya@cam_intrinsic
+		
+		pred_joints_world = torch.cat((pred_joints,torch.ones((batch_size,len(pred_joints[1]),1),device=pred_joints.device)),dim=-1)
+		pred_joints_cam = torch.einsum('bij,bkj->bik',pred_joints_world,cam_intrinsic.to(pred_joints_world.device))
+		pred_joints_cam = pred_joints_cam[:,:,:3]
+
 		# pred_smpl_joints = pred_output.smpl_joints
 		# pred_keypoints_2d = projection(pred_joints, pred_trans)
 
-		pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_joints.device)
-		pred_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_joints.device)
 		# pred_keypoints_2d = self.fisheye_projection(pred_joints, pred_rot, pred_trans)
 		pose = rotation_matrix_to_angle_axis(pred_rotmat.reshape(-1, 3, 3)).reshape(-1, 72)
 
@@ -618,6 +635,7 @@ class Regressor2(nn.Module):
 			'verts'  : pred_vertices,
 			# 'fisheye_kp_2d'  : pred_keypoints_2d,
 			'kp_3d'  : pred_joints,
+			'kp_3d_cam' :pred_joints_cam,
 			# 'smpl_kp_3d' : pred_smpl_joints,
 			'rotmat' : pred_rotmat,
 			'pred_trans' : pred_trans,

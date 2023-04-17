@@ -166,7 +166,7 @@ class temp_dataset(Dataset):
 
 		return transform(img)
 
-	def get_3d_joints(self,json_path):
+	def get_3d_joints(self,json_path,cam_coord=False):
 		"""
 		This function get xR_ego_dataset and convert to SMPL style points.
 		Input:
@@ -177,7 +177,10 @@ class temp_dataset(Dataset):
 		temp_json=None
 		with open(json_path,'r') as f:
 			temp_json=json.loads(f.read())
-		joints = np.vstack([j['trans'] for j in temp_json['joints']]).T
+		if cam_coord:
+			joints = temp_json['pts3d_fisheye']
+		else:
+			joints = np.vstack([j['trans'] for j in temp_json['joints']]).T
 		x=torch.tensor(joints[0])
 		y=torch.tensor(joints[1])
 		z=torch.tensor(joints[2])
@@ -318,7 +321,8 @@ class temp_dataset(Dataset):
 		depth_path=get_path(index,self.DEPTH)
 	   
 		image=self.get_rgba(img_path)
-		joints_3d=self.get_3d_joints(json_path)
+		joints_3d_world = self.get_3d_joints(json_path,cam_coord=False)
+		joints_3d_cam = self.get_3d_joints(json_path,cam_coord=True)
 		# joints_2d=self.get_2d_joints(json_path)
 		seg_image=self.get_rgba(seg_path)
 		camera_info=self.get_camera(json_path)
@@ -331,7 +335,8 @@ class temp_dataset(Dataset):
 			res.update({
 				'info' : img_path,
 				'image': image,
-				'joints_3d' : joints_3d,
+				'joints_3d' : joints_3d_world,
+				'joints_3d_cam' : joints_3d_cam,
 				# 'joints_2d' : joints_2d, 
 				'seg_image': seg_image,
 				'depth' : depth_map,
