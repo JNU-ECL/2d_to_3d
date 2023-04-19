@@ -432,6 +432,7 @@ class Regressor2(nn.Module):
 							[0., 0., 0., 1.]])
 		self.flatten = nn.Flatten()
 		self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+		self.fisheye_projection = FisheyeProjection()
 
 		self.conv_block0 = self._make_block(1,24)
 		self.conv_block1 = self._make_block(24,64) #512 512->256 256
@@ -614,7 +615,9 @@ class Regressor2(nn.Module):
 		pred_joints = torch.einsum('bij,kj->bik',pred_joints,self.procrustes['rotation'].to(pred_joints.device))
 		pred_joints *= self.procrustes['scale']
 		pred_joints += self.procrustes['translation'].to(pred_joints.device) # world coord
-		
+
+		pred_keypoints_2d = self.fisheye_projection(pred_joints, pred_rot, pred_trans)
+
 		cam_intrinsic = create_euler(pred_rot).view(batch_size,4,4)
 		cam_intrinsic[:,:3,3] = pred_trans
 		cam_intrinsic = torch.linalg.inv(cam_intrinsic)
@@ -627,13 +630,13 @@ class Regressor2(nn.Module):
 		# pred_smpl_joints = pred_output.smpl_joints
 		# pred_keypoints_2d = projection(pred_joints, pred_trans)
 
-		# pred_keypoints_2d = self.fisheye_projection(pred_joints, pred_rot, pred_trans)
+		
 		pose = rotation_matrix_to_angle_axis(pred_rotmat.reshape(-1, 3, 3)).reshape(-1, 72)
 
 		res = {
 			'theta'  : torch.cat([pred_trans, pred_shape, pose], dim=1),
 			'verts'  : pred_vertices,
-			# 'fisheye_kp_2d'  : pred_keypoints_2d,
+			'fisheye_kp_2d'  : pred_keypoints_2d,
 			'kp_3d'  : pred_joints,
 			'kp_3d_cam' :pred_joints_cam,
 			# 'smpl_kp_3d' : pred_smpl_joints,
@@ -654,7 +657,7 @@ class Regressor2(nn.Module):
 					  stride=stride,
 					  padding=padding),
 			nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM),
-			nn.LeakyReLU(inplace=True),
+			nn.ReLU(inplace=True),
 			nn.Dropout(p=0.2),
 		)
 
