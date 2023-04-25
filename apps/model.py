@@ -32,7 +32,7 @@ use_cuda = torch.cuda.is_available()
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str ='/workspace/2d_to_3d/apps/exp228/best.pth'):
+	def __init__(self,pretrained_path:str =None):
 		super().__init__()
 		only_resnet=False
 		self.feature_model1 = get_pose_net(True)
@@ -62,10 +62,10 @@ class TempModel(nn.Module):
 		
 		if is_train:
 			regressor2_res_dict=self.regressor2(
-				# heatmap_,
-				# depth_,
-				feature_dict['heatmap'],
-				feature_dict['depthmap']
+				heatmap_,
+				depth_,
+				# feature_dict['heatmap'],
+				# feature_dict['depthmap']
 				)
 		else:
 			regressor2_res_dict=self.regressor2(
@@ -230,12 +230,12 @@ class PoseResNet(nn.Module):
 		self.final_layer =  nn.Sequential(
 			nn.Conv2d(
 			in_channels=512,
-			out_channels=24,
+			out_channels=19,
 			kernel_size=3,
 			stride=1,
 			padding=1
 			),
-			nn.BatchNorm2d(24, momentum=BN_MOMENTUM),
+			nn.BatchNorm2d(19, momentum=BN_MOMENTUM),
 			nn.ReLU(inplace=True)
 		)
 
@@ -437,7 +437,7 @@ class Regressor2(nn.Module):
 		self.fisheye_projection = FisheyeProjection()
 
 		self.conv_block0 = self._make_block(1,24)
-		self.conv_block1 = self._make_block(24,64) #512 512->256 256
+		self.conv_block1 = self._make_block(19,64) #512 512->256 256
 		self.conv_block2 = self._make_block(64,128) #256 256->128 128
 		self.conv_block3 = self._make_block(128,256) #128 128->64 64
 		self.conv_block4 = self._make_block(256,512) #64 64->32 32
@@ -450,7 +450,7 @@ class Regressor2(nn.Module):
 		# self.conv_block5 = self._make_block(512,1024) #32 32->16 16
 		# self.conv_block6 = self._make_block(1024,2048) #16 16->4 4 : 32768
 		
-		self.downsample_heat = self._make_downsample(24,512,4,20,0)
+		self.downsample_heat = self._make_downsample(19,512,4,20,0)
 		self.downsample_depth = self._make_downsample(1,512,17,33,0)
 
 		self.bilinear_layer_pose = nn.ModuleList()
@@ -554,7 +554,7 @@ class Regressor2(nn.Module):
 		x = self.conv_block3(x)
 		x = self.conv_block4(x)
 		residual_x = self.downsample_heat(residual_x)
-		x = self.avgpool(x) #512
+		x = self.avgpool(x+residual_x) #512
 
 		x2 = self.conv_block0_(x2) #->256
 		x2 = self.conv_block1_(x2) #->128
@@ -607,28 +607,24 @@ class Regressor2(nn.Module):
 		)
 
 		pred_vertices = pred_output.vertices
-		pred_joints = pred_output.joints[:,:24,:]
-
+		pred_joints = torch.concat((pred_output.joints[:,:3,:],
+			      					pred_output.joints[:,4:6,:],
+									pred_output.joints[:,7:9,:],
+									pred_output.joints[:,10:13,:],
+									pred_output.joints[:,16:25,:]),dim=1)
+		pred_joints_raw = pred_output.joints[:,:25,:]
 
 		
 		pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_joints.device)
 		pred_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_joints.device)
-		
-		pred_joints = torch.einsum('bij,kj->bik',pred_joints,self.procrustes['rotation'].to(pred_joints.device))
-		pred_joints *= self.procrustes['scale']
-		pred_joints += self.procrustes['translation'].to(pred_joints.device) # world coord
-		
-		pred_keypoints_2d = self.fisheye_projection(pred_joints, pred_rot, pred_trans)
 
-		cam_intrinsic = create_euler(pred_rot).view(batch_size,4,4)
-		cam_intrinsic[:,:3,3] = pred_trans
-		cam_intrinsic = torch.linalg.inv(cam_intrinsic)
-		cam_intrinsic = self.Mmaya@cam_intrinsic
+		world_coord_joints_raw = self._world_coord(pred_joints_raw)
+		cam_coord_joints_raw = self._cam_coord(world_coord_joints_raw,pred_rot,pred_trans,batch_size)
 		
-		pred_joints_world = torch.cat((pred_joints,torch.ones((batch_size,len(pred_joints[1]),1),device=pred_joints.device)),dim=-1)
-		pred_joints_cam = torch.einsum('bij,bkj->bik',pred_joints_world,cam_intrinsic.to(pred_joints_world.device))
-		pred_joints_cam = pred_joints_cam[:,:,:3]
-
+		
+		world_coord_joints = self._world_coord(pred_joints)
+		cam_coord_joints = self._cam_coord(world_coord_joints,pred_rot,pred_trans,batch_size)
+		pred_keypoints_2d = self.fisheye_projection(world_coord_joints, pred_rot, pred_trans)
 		# pred_smpl_joints = pred_output.smpl_joints
 		# pred_keypoints_2d = projection(pred_joints, pred_trans)
 
@@ -640,7 +636,8 @@ class Regressor2(nn.Module):
 			'verts'  : pred_vertices,
 			'fisheye_kp_2d'  : pred_keypoints_2d,
 			'kp_3d'  : pred_joints,
-			'kp_3d_cam' :pred_joints_cam,
+			'kp_3d_cam' :cam_coord_joints,
+			'kp_3d_cam_raw' : cam_coord_joints_raw,
 			# 'smpl_kp_3d' : pred_smpl_joints,
 			'rotmat' : pred_rotmat,
 			'pred_trans' : pred_trans,
@@ -650,6 +647,22 @@ class Regressor2(nn.Module):
 		}
 		return res
 
+	def _world_coord(self,pred_joints):
+		pred_joints = torch.einsum('bij,kj->bik',pred_joints,self.procrustes['rotation'].to(pred_joints.device))
+		pred_joints *= self.procrustes['scale']
+		pred_joints += self.procrustes['translation'].to(pred_joints.device) # world coo
+		return pred_joints
+
+	def _cam_coord(self,pred_joints,pred_rot,pred_trans,batch_size):
+		cam_intrinsic = create_euler(pred_rot).view(batch_size,4,4)
+		cam_intrinsic[:,:3,3] = pred_trans
+		cam_intrinsic = torch.linalg.inv(cam_intrinsic)
+		cam_intrinsic = self.Mmaya@cam_intrinsic
+		
+		pred_joints_world = torch.cat((pred_joints,torch.ones((batch_size,len(pred_joints[1]),1),device=pred_joints.device)),dim=-1)
+		pred_joints_cam = torch.einsum('bij,bkj->bik',pred_joints_world,cam_intrinsic.to(pred_joints_world.device))
+		pred_joints_cam = pred_joints_cam[:,:,:3]
+		return pred_joints_cam
 	
 	def _make_block(self,in_channels, out_channels, kernel_size=4, stride=2, padding=1):
 		return nn.Sequential(
@@ -687,7 +700,7 @@ class FisheyeProjection(nn.Module):
 		M = M.squeeze(1).to(points_3d.device)
 		self.K = self.K.to(points_3d.device)
 		# Transform points to camera coordinate system
-		points_homogeneous = torch.cat((points_3d, torch.ones((batch_size,24,1), device=points_3d.device)), dim=-1)
+		points_homogeneous = torch.cat((points_3d, torch.ones((batch_size,19,1), device=points_3d.device)), dim=-1)
 		# P_ext = torch.cat((self.M[:3,:3], self.t), dim=-1)
 		points_camera = torch.einsum('bij,bkj->bki',M,points_homogeneous)
 
