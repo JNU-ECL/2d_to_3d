@@ -143,7 +143,7 @@ class kp_3d_loss(nn.Module):
 class kp_2d_loss(nn.Module):
     def __init__(self) -> None:
         nn.Module.__init__(self)
-        self.loss=nn.MSELoss()
+        self.loss=nn.L1Loss()
     
     def forward(self,x,label):
         res=None

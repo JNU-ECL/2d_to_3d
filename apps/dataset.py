@@ -97,8 +97,18 @@ class temp_dataset(Dataset):
 		self.subject_names=self.IMAGE.keys()
 
 		self.xR_2_SMPL=[2,31,61,62,27,57,63,4,34,64,29,59,0,28,58,1,3,33,5,35,6,36,11,41]
-		self.skip_num = [13, 14, 15]
-		
+		self.skip_num = []
+
+		self.Khmc = torch.tensor([[352.59619801644876, 0.0, 0.0],
+					[0.0, 352.70276325061578, 0.0],
+					[654.6810228318458, 400.952228031277, 1.0]]).T
+		self.kd = torch.tensor([-0.05631891929412012, -0.0038333424842925286,
+						-0.00024681888617308917, -0.00012153386798050158])
+
+		self.Mmaya = torch.tensor([[1., 0., 0., 0.],
+							[0., -1., 0., 0.],
+							[0., 0., -1., 0.],
+							[0., 0., 0., 1.]])
 		if self.is_train:
 			self.JSON = load_data(self.root,'json')
 			self.SEGMAP = load_data(self.root,'objectId')
@@ -179,38 +189,39 @@ class temp_dataset(Dataset):
 			temp_json=json.loads(f.read())
 		if cam_coord:
 			joints = temp_json['pts3d_fisheye']
+			assert len(joints) == 3, f'pts3d_fisheye None{json_path}'
 		else:
 			joints = np.vstack([j['trans'] for j in temp_json['joints']]).T
 		x=torch.tensor(joints[0])
 		y=torch.tensor(joints[1])
 		z=torch.tensor(joints[2])
-		res=[x,y,z]
-		res = torch.stack(res,0).to(torch.float32).T
-		ego_pose_label = res
+		temp_joints = [x,y,z]
+		temp_joints = torch.stack(temp_joints,0).to(torch.float32).T
+		ego_pose_label = temp_joints
 		
 		SMPL_label=[]
 		for xR_idx in self.xR_2_SMPL:
 			if xR_idx in self.skip_num : continue
-			SMPL_label.append(res[xR_idx])
+			SMPL_label.append(temp_joints[xR_idx])
 		SMPL_label=torch.stack(SMPL_label)
 		# self.temp_view(SMPL_label)
 		return SMPL_label
 	#TODO : 굳이 SMPL 에서 2d projection을 할 필요는 없지않나.. 	
-	def get_2d_joints(self,json_path):
-		temp_json=None
-		res=None
-		with open(json_path,'r') as f:
-			temp_json=json.loads(f.read())
-		h_fov = torch.tensor(temp_json['camera']['cam_fov'])
-		translation = torch.tensor(temp_json['camera']['trans'])
-		rotation = torch.tensor(temp_json['camera']['rot']) * np.pi / 180.0
-		joints_3d = self.get_3d_joints(json_path)
+	# def get_2d_joints(self,json_path):
+	# 	temp_json=None
+	# 	res=None
+	# 	with open(json_path,'r') as f:
+	# 		temp_json=json.loads(f.read())
+	# 	h_fov = torch.tensor(temp_json['camera']['cam_fov'])
+	# 	translation = torch.tensor(temp_json['camera']['trans'])
+	# 	rotation = torch.tensor(temp_json['camera']['rot']) * np.pi / 180.0
+	# 	joints_3d = self.get_3d_joints(json_path)
 		
 		
-		joints_2d = projection_temp_dataset(joints_3d,translation,rotation)
-		return joints_2d
+	# 	joints_2d = projection_temp_dataset(joints_3d,translation,rotation)
+	# 	return joints_2d
 	
-	def get_fisheye_2d_joints(self, json_path, resize=(512,512)):
+	def get_fisheye_2d_joints(self, json_path, resize=(512,512), cam_coord = True):
 		"""
 		TODO:
 		Input:
@@ -222,6 +233,21 @@ class temp_dataset(Dataset):
 		res=None
 		with open(json_path,'r') as f:
 			temp_json=json.loads(f.read())
+
+		if cam_coord:
+			temp_joints = torch.tensor(temp_json['pts2d_fisheye']).T # json 안쪽에 pts2d_fisheye 데이터 결측치 있음 
+			SMPL_label=[]
+			for xR_idx in self.xR_2_SMPL:
+				if xR_idx in self.skip_num : continue
+				SMPL_label.append(temp_joints[xR_idx])
+			SMPL_label=torch.stack(SMPL_label)
+			res = SMPL_label
+			if resize is not None:
+				H,W=800,1280
+				norm_res = res/torch.tensor([W,H])
+				res = norm_res * torch.tensor(resize)	
+			return res
+
 		translation = torch.tensor(temp_json['camera']['trans'])
 		rotation = torch.tensor(temp_json['camera']['rot']) * np.pi / 180.0
 		joints_3d = self.get_3d_joints(json_path).T

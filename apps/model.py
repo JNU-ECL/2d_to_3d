@@ -32,7 +32,7 @@ use_cuda = torch.cuda.is_available()
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str =None):
+	def __init__(self,pretrained_path:str ='/workspace/2d_to_3d/apps/exp228/best.pth'):
 		super().__init__()
 		only_resnet=False
 		self.feature_model1 = get_pose_net(True)
@@ -62,8 +62,10 @@ class TempModel(nn.Module):
 		
 		if is_train:
 			regressor2_res_dict=self.regressor2(
-				feature_dict['heatmap'].detach(),
-				feature_dict['depthmap'].detach(),
+				# heatmap_,
+				# depth_,
+				feature_dict['heatmap'],
+				feature_dict['depthmap']
 				)
 		else:
 			regressor2_res_dict=self.regressor2(
@@ -432,6 +434,7 @@ class Regressor2(nn.Module):
 							[0., 0., 0., 1.]])
 		self.flatten = nn.Flatten()
 		self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+		self.fisheye_projection = FisheyeProjection()
 
 		self.conv_block0 = self._make_block(1,24)
 		self.conv_block1 = self._make_block(24,64) #512 512->256 256
@@ -615,6 +618,8 @@ class Regressor2(nn.Module):
 		pred_joints *= self.procrustes['scale']
 		pred_joints += self.procrustes['translation'].to(pred_joints.device) # world coord
 		
+		pred_keypoints_2d = self.fisheye_projection(pred_joints, pred_rot, pred_trans)
+
 		cam_intrinsic = create_euler(pred_rot).view(batch_size,4,4)
 		cam_intrinsic[:,:3,3] = pred_trans
 		cam_intrinsic = torch.linalg.inv(cam_intrinsic)
@@ -633,7 +638,7 @@ class Regressor2(nn.Module):
 		res = {
 			'theta'  : torch.cat([pred_trans, pred_shape, pose], dim=1),
 			'verts'  : pred_vertices,
-			# 'fisheye_kp_2d'  : pred_keypoints_2d,
+			'fisheye_kp_2d'  : pred_keypoints_2d,
 			'kp_3d'  : pred_joints,
 			'kp_3d_cam' :pred_joints_cam,
 			# 'smpl_kp_3d' : pred_smpl_joints,
@@ -654,7 +659,7 @@ class Regressor2(nn.Module):
 					  stride=stride,
 					  padding=padding),
 			nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM),
-			nn.LeakyReLU(inplace=True),
+			nn.ReLU(inplace=True),
 			nn.Dropout(p=0.2),
 		)
 
