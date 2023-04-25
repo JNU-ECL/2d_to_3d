@@ -221,6 +221,9 @@ class PoseResNet(nn.Module):
 		self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
 		self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
 
+		self.deconv_layer1_ = self._make_deconv_layer2(2048,1024)
+		self.deconv_layer2_ = self._make_deconv_layer2(1024,512)
+
 		self.deconv_layer1 = self._make_deconv_layer2(2048,1024)
 		self.deconv_layer2 = self._make_deconv_layer2(1024,512)
 		self.deconv_layer3 = self._make_deconv_layer2(512,128)
@@ -230,12 +233,12 @@ class PoseResNet(nn.Module):
 		self.final_layer =  nn.Sequential(
 			nn.Conv2d(
 			in_channels=512,
-			out_channels=19,
+			out_channels=22,
 			kernel_size=3,
 			stride=1,
 			padding=1
 			),
-			nn.BatchNorm2d(19, momentum=BN_MOMENTUM),
+			nn.BatchNorm2d(22, momentum=BN_MOMENTUM),
 			nn.ReLU(inplace=True)
 		)
 
@@ -332,8 +335,8 @@ class PoseResNet(nn.Module):
 		depthmap = self.deconv_layer5(depthmap) # -> 1x512x512
 
 
-		heatmap = self.deconv_layer1(temp_x) # -> 1024x32x32
-		heatmap = self.deconv_layer2(heatmap+x_2) # -> 512x64x64
+		heatmap = self.deconv_layer1_(temp_x) # -> 1024x32x32
+		heatmap = self.deconv_layer2_(heatmap+x_2) # -> 512x64x64
 
 		heatmap = self.final_layer(heatmap) # -> 24x64x64
 
@@ -437,7 +440,7 @@ class Regressor2(nn.Module):
 		self.fisheye_projection = FisheyeProjection()
 
 		self.conv_block0 = self._make_block(1,24)
-		self.conv_block1 = self._make_block(19,64) #512 512->256 256
+		self.conv_block1 = self._make_block(22,64) #512 512->256 256
 		self.conv_block2 = self._make_block(64,128) #256 256->128 128
 		self.conv_block3 = self._make_block(128,256) #128 128->64 64
 		self.conv_block4 = self._make_block(256,512) #64 64->32 32
@@ -450,7 +453,7 @@ class Regressor2(nn.Module):
 		# self.conv_block5 = self._make_block(512,1024) #32 32->16 16
 		# self.conv_block6 = self._make_block(1024,2048) #16 16->4 4 : 32768
 		
-		self.downsample_heat = self._make_downsample(19,512,4,20,0)
+		self.downsample_heat = self._make_downsample(22,512,4,20,0)
 		self.downsample_depth = self._make_downsample(1,512,17,33,0)
 
 		self.bilinear_layer_pose = nn.ModuleList()
@@ -607,10 +610,7 @@ class Regressor2(nn.Module):
 		)
 
 		pred_vertices = pred_output.vertices
-		pred_joints = torch.concat((pred_output.joints[:,:3,:],
-			      					pred_output.joints[:,4:6,:],
-									pred_output.joints[:,7:9,:],
-									pred_output.joints[:,10:13,:],
+		pred_joints = torch.concat((pred_output.joints[:,:13,:],
 									pred_output.joints[:,16:25,:]),dim=1)
 		pred_joints_raw = pred_output.joints[:,:25,:]
 
@@ -700,7 +700,7 @@ class FisheyeProjection(nn.Module):
 		M = M.squeeze(1).to(points_3d.device)
 		self.K = self.K.to(points_3d.device)
 		# Transform points to camera coordinate system
-		points_homogeneous = torch.cat((points_3d, torch.ones((batch_size,19,1), device=points_3d.device)), dim=-1)
+		points_homogeneous = torch.cat((points_3d, torch.ones((batch_size,22,1), device=points_3d.device)), dim=-1)
 		# P_ext = torch.cat((self.M[:3,:3], self.t), dim=-1)
 		points_camera = torch.einsum('bij,bkj->bki',M,points_homogeneous)
 
