@@ -32,7 +32,7 @@ use_cuda = torch.cuda.is_available()
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str =None):
+	def __init__(self,pretrained_path:str ='/workspace/2d_to_3d/apps/exp271/last.pth'):
 		super().__init__()
 		only_resnet=False
 		self.feature_model1 = get_pose_net(True)
@@ -43,7 +43,7 @@ class TempModel(nn.Module):
 			if only_resnet:
 				feature_model1_state_dict = OrderedDict()
 				for k,v in tempmodel_ckpt.items():
-					if k.startswith('featrue_model1.'):
+					if k.startswith('feature_model1.'):
 						new_key = k[len('feature_model1.'):]
 						feature_model1_state_dict[new_key] = v
 				self.feature_model1.load_state_dict(feature_model1_state_dict)
@@ -62,10 +62,12 @@ class TempModel(nn.Module):
 		
 		if is_train:
 			regressor2_res_dict=self.regressor2(
-				heatmap_,
-				depth_,
-				# feature_dict['heatmap'],
-				# feature_dict['depthmap']
+				# heatmap_,
+				# depth_,
+				feature_dict['heatmap'],
+				feature_dict['depthmap'],
+				# feature_dict['heatmap'].detach(),
+				# feature_dict['depthmap'].detach(),
 				)
 		else:
 			regressor2_res_dict=self.regressor2(
@@ -557,7 +559,7 @@ class Regressor2(nn.Module):
 		x = self.conv_block3(x)
 		x = self.conv_block4(x)
 		residual_x = self.downsample_heat(residual_x)
-		x = self.avgpool(x+residual_x) #512
+		x = self.avgpool(x) #512
 
 		x2 = self.conv_block0_(x2) #->256
 		x2 = self.conv_block1_(x2) #->128
@@ -708,8 +710,9 @@ class FisheyeProjection(nn.Module):
 		points_normalized = points_camera[:, :, :2] / points_camera[:, :, 2].unsqueeze(-1)
 
 		# Apply fisheye distortion
-		r = torch.norm(points_normalized, p=2, dim=-1)
-		theta = torch.atan2(r, torch.ones_like(r))
+		epsilon = 1e-9
+		r = torch.norm(points_normalized + epsilon, p=2, dim=-1)
+		theta = torch.atan2(r, torch.ones_like(r) + epsilon)
 		theta_d = theta * (1 + self.D[0] * theta**2 + self.D[1] * theta**4 + self.D[2] * theta**6 + self.D[3] * theta**8)
 		points_distorted = points_normalized * (theta_d / r).unsqueeze(-1)
 
