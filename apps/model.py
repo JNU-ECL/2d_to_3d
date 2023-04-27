@@ -32,7 +32,7 @@ use_cuda = torch.cuda.is_available()
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str = '/workspace/2d_to_3d/apps/exp282/last.pth'):
+	def __init__(self,pretrained_path:str = '/workspace/2d_to_3d/apps/exp293/last.pth'):
 		super().__init__()
 		only_resnet=False
 		self.feature_model1 = get_pose_net(True)
@@ -62,12 +62,12 @@ class TempModel(nn.Module):
 		
 		if is_train:
 			regressor2_res_dict=self.regressor2(
-				heatmap_,
-				depth_,
+				# heatmap_,
+				# depth_,
 				# feature_dict['heatmap'],
 				# feature_dict['depthmap'],
-				# feature_dict['heatmap'].detach(),
-				# feature_dict['depthmap'].detach(),
+				feature_dict['heatmap'].detach(),
+				feature_dict['depthmap'].detach(),
 				)
 		else:
 			regressor2_res_dict=self.regressor2(

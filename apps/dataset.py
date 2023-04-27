@@ -189,9 +189,9 @@ class temp_dataset(Dataset):
 			temp_json=json.loads(f.read())
 		if cam_coord:
 			joints = temp_json['pts3d_fisheye']
-			assert len(joints) == 3, f'pts3d_fisheye None{json_path}'
 		else:
 			joints = np.vstack([j['trans'] for j in temp_json['joints']]).T
+		assert len(joints[0])==65, f'pts3d_fisheye len wrong {json_path}'
 		x=torch.tensor(joints[0])
 		y=torch.tensor(joints[1])
 		z=torch.tensor(joints[2])
@@ -250,7 +250,7 @@ class temp_dataset(Dataset):
 
 		translation = torch.tensor(temp_json['camera']['trans'])
 		rotation = torch.tensor(temp_json['camera']['rot']) * np.pi / 180.0
-		joints_3d = self.get_3d_joints(json_path).T
+		joints_3d = self.get_3d_joints(json_path,True).T
 		
 		
 		Khmc = torch.tensor([[352.59619801644876, 0.0, 0.0],
