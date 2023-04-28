@@ -32,7 +32,7 @@ use_cuda = torch.cuda.is_available()
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str = '/workspace/2d_to_3d/apps/exp293/last.pth'):
+	def __init__(self,pretrained_path:str = None):
 		super().__init__()
 		only_resnet=False
 		self.feature_model1 = get_pose_net(True)
@@ -62,12 +62,12 @@ class TempModel(nn.Module):
 		
 		if is_train:
 			regressor2_res_dict=self.regressor2(
-				# heatmap_,
-				# depth_,
+				heatmap_,
+				depth_,
 				# feature_dict['heatmap'],
 				# feature_dict['depthmap'],
-				feature_dict['heatmap'].detach(),
-				feature_dict['depthmap'].detach(),
+				# feature_dict['heatmap'].detach(),
+				# feature_dict['depthmap'].detach(),
 				)
 		else:
 			regressor2_res_dict=self.regressor2(
@@ -613,8 +613,8 @@ class Regressor2(nn.Module):
 
 		pred_vertices = pred_output.vertices
 		pred_joints = torch.concat((pred_output.joints[:,:13,:],
-									pred_output.joints[:,16:25,:]),dim=1)
-		pred_joints_raw = pred_output.joints[:,:25,:]
+									pred_output.joints[:,15:24,:]),dim=1)
+		pred_joints_raw = pred_output.joints[:,:24,:]
 
 		
 		pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_joints.device)
@@ -627,12 +627,15 @@ class Regressor2(nn.Module):
 		world_coord_joints = self._world_coord(pred_joints)
 		cam_coord_joints = self._cam_coord(world_coord_joints,pred_rot,pred_trans,batch_size)
 		pred_keypoints_2d = self.fisheye_projection(world_coord_joints, pred_rot, pred_trans)
+		pred_heatmap = self.get_gaussian_heatmap(world_coord_joints, pred_rot, pred_trans)
+
 		# pred_smpl_joints = pred_output.smpl_joints
 		# pred_keypoints_2d = projection(pred_joints, pred_trans)
-
+		
 		# pred_keypoints_2d = self.fisheye_projection(pred_joints, pred_rot, pred_trans)
 		pose = rotation_matrix_to_angle_axis(pred_rotmat.reshape(-1, 3, 3)).reshape(-1, 72)
 
+		
 		res = {
 			'theta'  : torch.cat([pred_trans, pred_shape, pose], dim=1),
 			'verts'  : pred_vertices,
@@ -640,6 +643,7 @@ class Regressor2(nn.Module):
 			'kp_3d'  : pred_joints,
 			'kp_3d_cam' :cam_coord_joints,
 			'kp_3d_cam_raw' : cam_coord_joints_raw,
+			'pred_heatmap_smpl' : pred_heatmap,
 			# 'smpl_kp_3d' : pred_smpl_joints,
 			'rotmat' : pred_rotmat,
 			'pred_trans' : pred_trans,
@@ -647,6 +651,31 @@ class Regressor2(nn.Module):
 			# 'pred_shape': pred_shape,
 			# 'pred_pose': pred_pose,
 		}
+		return res
+
+	def generate_gaussian_heatmap(self, joint_location, image_size=(64, 64), sigma=1):
+		epsilon = 1e-9
+		x, y = joint_location
+		# x, y = torch.tensor(x), torch.tensor(y)
+		grid_y, grid_x = torch.meshgrid(torch.arange(0, image_size[1]), torch.arange(0, image_size[0]))
+		grid_x = grid_x.to(x.device)
+		grid_y = grid_y.to(y.device)
+		dist = (grid_x - x) ** 2 + (grid_y - y) ** 2
+		heatmap = torch.exp(-dist / ((2 * sigma**2)+epsilon))
+		return heatmap
+
+	def generate_heatmap_gt(self, joint_location, image_size=(64, 64), sigma=1):
+		batch_size,joint_num,_=joint_location.shape
+		heatmap_gt = torch.zeros((batch_size, joint_num, image_size[1], image_size[0]), dtype=torch.float32, device=joint_location.device)
+		for i in range(batch_size):	
+			for j, joint in enumerate(joint_location[i]):
+				heatmap_gt[i, j, :, :] = self.generate_gaussian_heatmap(joint, image_size, sigma)
+		return heatmap_gt
+
+	def get_gaussian_heatmap(self, world_coord_joints, pred_rot, pred_trans):
+		res = None
+		fisheye_joint_labels = self.fisheye_projection(world_coord_joints, pred_rot, pred_trans, resize=(64, 64))
+		res = self.generate_heatmap_gt(fisheye_joint_labels)
 		return res
 
 	def _world_coord(self,pred_joints):

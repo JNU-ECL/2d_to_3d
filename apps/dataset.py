@@ -96,8 +96,9 @@ class temp_dataset(Dataset):
 		self.IMAGE = load_data(self.root,'rgba')
 		self.subject_names=self.IMAGE.keys()
 
-		self.xR_2_SMPL=[2,31,61,62,27,57,63,4,34,64,29,59,0,28,58,-1,3,33,5,35,6,36,11,41,1]
-		self.skip_num = [28,58,-1]
+		self.xR_2_SMPL=[2,31,61,62,27,57,63,4,34,64,
+		  				29,59,0,28,58,1,3,33,5,35,6,36,11,41]
+		self.skip_num = [28,58]
 
 		self.Khmc = torch.tensor([[352.59619801644876, 0.0, 0.0],
 					[0.0, 352.70276325061578, 0.0],
@@ -296,7 +297,7 @@ class temp_dataset(Dataset):
 	# 가우시안 분포를 생성하는 함수
 	def generate_gaussian_heatmap(self,joint_location,image_size=[64,64], sigma=2):
 		x, y = joint_location
-		x, y = np.array(x),np.array(y)
+		x, y = max(np.array(1),np.array(x)),max(np.array(1),np.array(y))
 		grid_y, grid_x = np.mgrid[0:image_size[1], 0:image_size[0]]
 		dist = (grid_x - x) ** 2 + (grid_y - y) ** 2
 		heatmap = np.exp(-dist / (2 * sigma**2))
@@ -310,7 +311,7 @@ class temp_dataset(Dataset):
 		return heatmap_gt
 	
 	#TODO : gaussian code 
-	def get_gaussian_heatmap(self,json_path):
+	def get_gaussian_heatmap(self,json_path,sigma=2):
 
 		"""
 		# 관절 위치, 가우시안 분포 크기, 이미지 크기를 지정합니다.
@@ -323,7 +324,7 @@ class temp_dataset(Dataset):
 		"""
 		res=None
 		fisheye_joint_labels = self.get_fisheye_2d_joints(json_path,resize=(64,64))
-		res = self.generate_heatmap_gt(fisheye_joint_labels)
+		res = self.generate_heatmap_gt(fisheye_joint_labels,sigma=sigma)
 		return res
 
 	def get_info(self,json_path):
@@ -355,7 +356,7 @@ class temp_dataset(Dataset):
 		depth_map=self.get_depth(depth_path)
 		fisheye_joints_2d=self.get_fisheye_2d_joints(json_path,resize=(512,512))
 		heatmap=self.get_gaussian_heatmap(json_path)
-
+		heatmap_1=self.get_gaussian_heatmap(json_path,sigma=1)
 		res={}
 		if self.is_train:
 			res.update({
@@ -368,7 +369,8 @@ class temp_dataset(Dataset):
 				'depth' : depth_map,
 				'camera_info': camera_info,
 				'fisheye_joints_2d' : fisheye_joints_2d,
-				'heatmap' : heatmap
+				'heatmap' : heatmap,
+				'heatmap_1' : heatmap_1,
 			})
 			return res
 		res.update({
