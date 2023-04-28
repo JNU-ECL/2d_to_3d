@@ -97,9 +97,9 @@ class temp_dataset(Dataset):
 		self.subject_names=self.IMAGE.keys()
 
 		self.xR_2_SMPL=[2,31,61,62,27,57,63,4,34,64,
-		  				29,59,0,28,58,1,3,33,5,35,
-						6,36,11,41]
-		self.skip_num = [28,58]
+		  				29,59,0,28,58,-1,3,33,5,35,
+						6,36,11,41,1]
+		self.skip_num = [28,58,-1]
 
 		self.Khmc = torch.tensor([[352.59619801644876, 0.0, 0.0],
 					[0.0, 352.70276325061578, 0.0],

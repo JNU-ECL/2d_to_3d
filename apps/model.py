@@ -55,7 +55,7 @@ class TempModel(nn.Module):
 		image_ = x['image']
 		depth_ = x['depth']
 		heatmap_ = x['heatmap']
-		# trans_, rot_ = x['camera_info']
+		trans_, rot_ = x['camera_info']
 		
 		feature_dict=self.feature_model1(image_)
 	
@@ -64,6 +64,8 @@ class TempModel(nn.Module):
 			regressor2_res_dict=self.regressor2(
 				heatmap_,
 				depth_,
+				trans_,
+				rot_,
 				# feature_dict['heatmap'],
 				# feature_dict['depthmap'],
 				# feature_dict['heatmap'].detach(),
@@ -73,14 +75,16 @@ class TempModel(nn.Module):
 			regressor2_res_dict=self.regressor2(
 				feature_dict['heatmap'].detach(),
 				feature_dict['depthmap'].detach(),
+				feature_dict['pred_trans'].detach(),
+				feature_dict['pred_rot'].detach()
 				)
 
 		res.update({
    	  		'regressor2_dict' : regressor2_res_dict,
 	 		'depth_feature' : feature_dict['depthmap'],
 	 		'heatmap' : feature_dict['heatmap'],
-			# 'pred_cam_trans' : pred_trans,
-			# 'pred_cam_rot' : pred_rot
+			'pred_trans' : feature_dict['pred_trans'],
+			'pred_rot' : feature_dict['pred_rot']
 		})    
 		return res
 
@@ -232,6 +236,10 @@ class PoseResNet(nn.Module):
 		self.deconv_layer4 = self._make_deconv_layer2(128,64)
 		self.deconv_layer5 = self._make_deconv_layer2(64,1)
 		
+		self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+		self.deccam_trans = nn.Linear(2048, 3)
+		self.deccam_rot = nn.Linear(2048, 3)
+		
 		self.final_layer =  nn.Sequential(
 			nn.Conv2d(
 			in_channels=512,
@@ -317,7 +325,7 @@ class PoseResNet(nn.Module):
 		return nn.Sequential(*layers)
 
 	def forward(self, x): # -> 3x512x512
-		
+		batch_size=len(x)
 		x = self.conv1(x) # -> 64x256x256
 		x_ = x
 		x = self.bn1(x)
@@ -328,6 +336,13 @@ class PoseResNet(nn.Module):
 		x_1 = self.layer2(x_0) # -> 512x64x64
 		x_2 = self.layer3(x_1) # -> 1024x32x32
 		temp_x = self.layer4(x_2) # -> 2048x16x16
+
+		avp_x = self.avgpool(temp_x).view(batch_size,2048)
+		
+		pred_trans = self.deccam_trans(avp_x)
+		pred_rot = self.deccam_rot(avp_x) 
+		pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_trans.device)
+		pred_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_trans.device)
 
 
 		depthmap = self.deconv_layer1(temp_x) # -> 1024x32x32
@@ -344,7 +359,9 @@ class PoseResNet(nn.Module):
 
 		res = {
 			'depthmap':depthmap, 
-			'heatmap':heatmap
+			'heatmap':heatmap,
+			'pred_trans':pred_trans,
+			'pred_rot':pred_rot,
 		}
 		return res
 
@@ -457,7 +474,6 @@ class Regressor2(nn.Module):
 		
 		self.downsample_heat = self._make_downsample(22,512,4,20,0)
 		self.downsample_depth = self._make_downsample(1,512,17,33,0)
-
 		self.bilinear_layer_pose = nn.ModuleList()
 		self.bilinear_layer_shape = nn.ModuleList()
 
@@ -489,12 +505,12 @@ class Regressor2(nn.Module):
 
 		self.decpose = nn.Linear(1024, npose)
 		self.decshape = nn.Linear(1024, 10)
-		self.deccam_trans = nn.Linear(1024, 3)
-		self.deccam_rot = nn.Linear(1024, 3)
+		# self.deccam_trans = nn.Linear(1024, 3)
+		# self.deccam_rot = nn.Linear(1024, 3)
 		nn.init.xavier_uniform_(self.decpose.weight, gain=0.01)
 		nn.init.xavier_uniform_(self.decshape.weight, gain=0.01)
-		nn.init.xavier_uniform_(self.deccam_trans.weight, gain=0.01)
-		nn.init.xavier_uniform_(self.deccam_rot.weight, gain=0.01)
+		# nn.init.xavier_uniform_(self.deccam_trans.weight, gain=0.01)
+		# nn.init.xavier_uniform_(self.deccam_rot.weight, gain=0.01)
 
 		self.smpl = SMPL(
 			SMPL_MODEL_DIR,
@@ -535,7 +551,7 @@ class Regressor2(nn.Module):
 			nn.ReLU(inplace=True)
 		)
 
-	def forward(self, heatmap, depthmap):
+	def forward(self, heatmap, depthmap, pred_trans, pred_rot):
 		x=heatmap # 24 64 64
 		x2=depthmap # 1 512 512
 		# TODO : heatmap 입력 argmax로 차원당 1 하나씩
@@ -550,8 +566,9 @@ class Regressor2(nn.Module):
 		# coords = self.flatten(coords) # 10x24x2
 
 
-		residual_x = x # 24x64x64
-		residual_x2 = x2
+		residual_x = x # 22x64x64
+		residual_x2 = x2 # 1X512x512
+		
 	
 
 		x = self.conv_block1(x)
@@ -597,10 +614,9 @@ class Regressor2(nn.Module):
 
 		pred_pose = self.decpose(pred_pose)
 		pred_shape = self.decshape(pred_shape)
-
-		total_feat = torch.cat([heatmap_feat, depthmap_feat], 1)
-		pred_trans = self.deccam_trans(total_feat)
-		pred_rot = self.deccam_rot(total_feat) 
+		# total_feat = torch.cat([heatmap_feat, depthmap_feat], 1)
+		# pred_trans = self.deccam_trans(total_feat)
+		# pred_rot = self.deccam_rot(total_feat) 
 
 		pred_rotmat = rot6d_to_rotmat(pred_pose).view(batch_size, 24, 3, 3)
 
@@ -613,12 +629,12 @@ class Regressor2(nn.Module):
 
 		pred_vertices = pred_output.vertices
 		pred_joints = torch.concat((pred_output.joints[:,:13,:],
-									pred_output.joints[:,15:24,:]),dim=1)
-		pred_joints_raw = pred_output.joints[:,:24,:]
+									pred_output.joints[:,16:25,:]),dim=1)
+		pred_joints_raw = pred_output.joints[:,:25,:]
 
 		
-		pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_joints.device)
-		pred_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_joints.device)
+		# pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_joints.device)
+		# pred_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_joints.device)
 
 		world_coord_joints_raw = self._world_coord(pred_joints_raw)
 		cam_coord_joints_raw = self._cam_coord(world_coord_joints_raw,pred_rot,pred_trans,batch_size)
@@ -646,8 +662,8 @@ class Regressor2(nn.Module):
 			'pred_heatmap_smpl' : pred_heatmap,
 			# 'smpl_kp_3d' : pred_smpl_joints,
 			'rotmat' : pred_rotmat,
-			'pred_trans' : pred_trans,
-			'pred_rot' : pred_rot,
+			# 'pred_trans' : pred_trans,
+			# 'pred_rot' : pred_rot,
 			# 'pred_shape': pred_shape,
 			# 'pred_pose': pred_pose,
 		}
