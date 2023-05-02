@@ -357,7 +357,7 @@ class temp_dataset(Dataset):
 		depth_map=self.get_depth(depth_path)
 		fisheye_joints_2d=self.get_fisheye_2d_joints(json_path,resize=(512,512))
 		heatmap=self.get_gaussian_heatmap(json_path)
-		heatmap_1=self.get_gaussian_heatmap(json_path,sigma=1)
+		heatmap_1=self.get_gaussian_heatmap(json_path,sigma=1.8)
 		res={}
 		if self.is_train:
 			res.update({
