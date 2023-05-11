@@ -50,17 +50,18 @@ class TempModel(nn.Module):
 			else:
 				self.load_state_dict(tempmodel_ckpt)
 
-	def forward(self, x, is_train,epoch):
+	def forward(self, x, is_train):
 		res = {}
 		image_ = x['image']
-		depth_ = x['depth']
-		heatmap_ = x['heatmap']
+
 		# trans_, rot_ = x['camera_info']
 		
 		feature_dict=self.feature_model1(image_)
 	
 		
 		if is_train:
+			depth_ = x['depth']
+			heatmap_ = x['heatmap']
 			regressor2_res_dict=self.regressor2(
 				heatmap_,
 				depth_,
@@ -658,7 +659,8 @@ class Regressor2(nn.Module):
 			'theta'  : torch.cat([pred_trans, pred_shape, pose], dim=1),
 			'verts'  : pred_vertices,
 			'fisheye_kp_2d'  : pred_keypoints_2d,
-			'kp_3d'  : pred_joints,
+			'kp_3d_world'  : world_coord_joints,
+			'kp_3d_world_raw' : world_coord_joints_raw,
 			'kp_3d_cam' :cam_coord_joints,
 			'kp_3d_cam_raw' : cam_coord_joints_raw,
 			'pred_heatmap_smpl' : pred_heatmap,

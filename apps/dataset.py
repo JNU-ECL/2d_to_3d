@@ -344,22 +344,23 @@ class temp_dataset(Dataset):
 	def __getitem__(self, index):
 		# assert self.transform is not None
 		img_path=get_path(index,self.IMAGE)
-		json_path=get_path(index,self.JSON)
-		seg_path=get_path(index,self.SEGMAP)
-		depth_path=get_path(index,self.DEPTH)
-	   
 		image=self.get_rgba(img_path)
-		joints_3d_world = self.get_3d_joints(json_path,cam_coord=False)
-		joints_3d_cam = self.get_3d_joints(json_path,cam_coord=True)
-		# joints_2d=self.get_2d_joints(json_path)
-		seg_image=self.get_rgba(seg_path)
-		camera_info=self.get_camera(json_path)
-		depth_map=self.get_depth(depth_path)
-		fisheye_joints_2d=self.get_fisheye_2d_joints(json_path,resize=(512,512))
-		heatmap=self.get_gaussian_heatmap(json_path)
-		heatmap_1=self.get_gaussian_heatmap(json_path,sigma=1.8)
+		
 		res={}
 		if self.is_train:
+			json_path=get_path(index,self.JSON)
+			seg_path=get_path(index,self.SEGMAP)
+			depth_path=get_path(index,self.DEPTH)	
+
+			joints_3d_world = self.get_3d_joints(json_path,cam_coord=False)
+			joints_3d_cam = self.get_3d_joints(json_path,cam_coord=True)
+			# joints_2d=self.get_2d_joints(json_path)
+			seg_image=self.get_rgba(seg_path)
+			camera_info=self.get_camera(json_path)
+			depth_map=self.get_depth(depth_path)
+			fisheye_joints_2d=self.get_fisheye_2d_joints(json_path,resize=(512,512))
+			heatmap=self.get_gaussian_heatmap(json_path)
+			heatmap_1=self.get_gaussian_heatmap(json_path,sigma=1.8)
 			res.update({
 				'info' : img_path,
 				'image': image,
