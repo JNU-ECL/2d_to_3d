@@ -23,8 +23,22 @@ from smplx.body_models import SMPL
 import numpy as np
 from collections import OrderedDict
 from geometry import rot6d_to_rotmat, projection_temp, rotation_matrix_to_angle_axis, create_euler
-# TODO : kaolin based renderer 구현할것 
-# import kaolin as kal
+from pytorch3d.structures import Meshes
+from pytorch3d.renderer import (
+    look_at_view_transform,
+    OpenGLPerspectiveCameras, 
+    PointLights, 
+    DirectionalLights, 
+    Materials, 
+    RasterizationSettings, 
+    MeshRenderer, 
+    MeshRasterizer,  
+    SoftPhongShader,
+    TexturesVertex,
+	SoftSilhouetteShader
+)
+from smplpytorch.pytorch.smpl_layer import SMPL_Layer
+
 
 SMPL_MEAN_PARAMS = '/workspace/2d_to_3d/model/smpl_mean_params.npz'
 SMPL_MODEL_DIR = '/workspace/2d_to_3d/model/smpl'
@@ -32,11 +46,12 @@ use_cuda = torch.cuda.is_available()
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str = '/workspace/2d_to_3d/apps/exp364/last.pth'):
+	def __init__(self,pretrained_path:str =None):
 		super().__init__()
 		only_resnet=False
-		self.feature_model1 = get_pose_net(True)
-		self.regressor2=Regressor2(depthmapfeat_dim=512,heatmapfeat_dim=512,smpl_mean_params=SMPL_MEAN_PARAMS)
+		self.heatmap_module = get_pose_net('heatmap')
+		self.silhouette_module = get_pose_net('silhouette')
+		self.regressor2=Regressor2(depthmapfeat_c=512,heatmapfeat_c=512,smpl_mean_params=SMPL_MEAN_PARAMS)
 		
 		if pretrained_path:
 			tempmodel_ckpt = torch.load(pretrained_path)
@@ -56,15 +71,16 @@ class TempModel(nn.Module):
 
 		# trans_, rot_ = x['camera_info']
 		
-		feature_dict=self.feature_model1(image_)
-	
+		heatmap_feat=self.heatmap_module(image_)
+		silhouette_feat=self.silhouette_module(image_)
 		
 		if is_train:
 			depth_ = x['depth']
 			heatmap_ = x['heatmap']
+			silhouette_ = x['silhouette']
 			regressor2_res_dict=self.regressor2(
 				heatmap_,
-				depth_,
+				silhouette_,
 				# trans_,
 				# rot_,
 				# feature_dict['heatmap'],
@@ -74,16 +90,15 @@ class TempModel(nn.Module):
 				)
 		else:
 			regressor2_res_dict=self.regressor2(
-				feature_dict['heatmap'].detach(),
-				feature_dict['depthmap'].detach(),
-				# feature_dict['pred_trans'].detach(),
-				# feature_dict['pred_rot'].detach()
+				heatmap_feat['heatmap'].detach(),
+				silhouette_feat['silhouette'].detach(),
+
 				)
 
 		res.update({
    	  		'regressor2_dict' : regressor2_res_dict,
-	 		'depth_feature' : feature_dict['depthmap'],
-	 		'heatmap' : feature_dict['heatmap'],
+	 		'pred_silhouette' : silhouette_feat['silhouette'],
+	 		'heatmap' : heatmap_feat['heatmap'],
 			# 'pred_trans' : feature_dict['pred_trans'],
 			# 'pred_rot' : feature_dict['pred_rot']
 		})    
@@ -206,9 +221,8 @@ class Bottleneck(nn.Module):
 		out = self.relu(out)
 
 		return out
-
-
-class PoseResNet(nn.Module):
+	
+class PoseResNet_silhouette(nn.Module):
 
 	def __init__(self, block, layers, cfg, **kwargs):
 		self.inplanes = 64
@@ -217,7 +231,132 @@ class PoseResNet(nn.Module):
 		extra = cfg.MODEL.EXTRA
 		self.deconv_with_bias = extra.DECONV_WITH_BIAS
 
-		super(PoseResNet, self).__init__()
+		super(PoseResNet_silhouette, self).__init__()
+		self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
+							   bias=False)
+		self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
+		self.relu = nn.ReLU(inplace=True)
+		self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+		self.layer1 = self._make_layer(block, 64, layers[0])
+		self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
+		self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
+		self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+
+		self.deconv_layer1 = self._make_deconv_layer2(2048,1024)
+		self.deconv_layer2 = self._make_deconv_layer2(1024,512)
+		self.deconv_layer3 = self._make_deconv_layer2(512,128)
+		self.deconv_layer4 = self._make_deconv_layer2(128,64)
+		self.deconv_layer5 = self._make_deconv_layer2(64,1)
+		
+
+	def _make_deconv_layer2(self,in_planes, out_planes, kernel=4, stride=2, padding=1):
+		return nn.Sequential(
+			nn.ConvTranspose2d(
+				in_channels=in_planes,
+				out_channels=out_planes,
+				kernel_size=kernel,
+				stride=stride,
+				padding=padding,
+				bias=self.deconv_with_bias
+							   ),
+			nn.BatchNorm2d(out_planes, momentum=BN_MOMENTUM),
+			nn.ReLU(inplace=True),
+			)
+	
+	def _make_layer(self, block, planes, blocks, stride=1):
+		downsample = None
+		if stride != 1 or self.inplanes != planes * block.expansion:
+			downsample = nn.Sequential(
+				nn.Conv2d(self.inplanes, planes * block.expansion,
+						  kernel_size=1, stride=stride, bias=False),
+				nn.BatchNorm2d(planes * block.expansion, momentum=BN_MOMENTUM),
+			)
+
+		layers = []
+		layers.append(block(self.inplanes, planes, stride, downsample))
+		self.inplanes = planes * block.expansion
+		for i in range(1, blocks):
+			layers.append(block(self.inplanes, planes))
+
+		return nn.Sequential(*layers)
+
+	def _get_deconv_cfg(self, deconv_kernel, index):
+		if deconv_kernel == 4:
+			padding = 1
+			output_padding = 0
+		elif deconv_kernel == 3:
+			padding = 1
+			output_padding = 1
+		elif deconv_kernel == 2:
+			padding = 0
+			output_padding = 0
+
+		return deconv_kernel, padding, output_padding
+
+	def _make_deconv_layer(self, num_layers, num_filters, num_kernels, init_inplanes):
+		assert num_layers == len(num_filters), \
+			'ERROR: num_deconv_layers is different len(num_deconv_filters)'
+		assert num_layers == len(num_kernels), \
+			'ERROR: num_deconv_layers is different len(num_deconv_filters)'
+
+		layers = []
+		for i in range(num_layers):
+			# 4, 1, 0
+			kernel, padding, output_padding = \
+				self._get_deconv_cfg(num_kernels[i], i)
+			
+			planes = num_filters[i] # [256,128,64,32,3]
+			layers.append(
+				nn.ConvTranspose2d(
+					in_channels=init_inplanes,
+					out_channels=planes,
+					kernel_size=kernel,
+					stride=2,
+					padding=padding,
+					output_padding=output_padding,
+					bias=self.deconv_with_bias))
+			layers.append(nn.BatchNorm2d(planes, momentum=BN_MOMENTUM))
+			layers.append(nn.ReLU(inplace=True))
+			init_inplanes = planes
+
+		return nn.Sequential(*layers)
+
+	def forward(self, x): # -> 3x512x512
+		# batch_size=len(x)
+		x = self.conv1(x) # -> 64x256x256
+		x_ = x
+		x = self.bn1(x)
+		x = self.relu(x)
+		x = self.maxpool(x) # -> 64x128x128
+
+		x_0 = self.layer1(x) # -> 256x128x128
+		x_1 = self.layer2(x_0) # -> 512x64x64
+		x_2 = self.layer3(x_1) # -> 1024x32x32
+		temp_x = self.layer4(x_2) # -> 2048x16x16
+
+		silhouette = self.deconv_layer1(temp_x) # -> 1024x32x32
+		silhouette = self.deconv_layer2(silhouette+x_2) # -> 512x64x64
+		silhouette = self.deconv_layer3(silhouette+x_1) # -> 128x128x128
+		silhouette = self.deconv_layer4(silhouette) # -> 64x256x256
+		silhouette = self.deconv_layer5(silhouette) # -> 1x512x512
+
+
+		res = {
+			'silhouette':silhouette, 
+		}
+
+		return res
+
+class PoseResNet_heatmap(nn.Module):
+
+	def __init__(self, block, layers, cfg, **kwargs):
+		self.inplanes = 64
+		self.deconv1_inplanes = None
+		self.deconv2_inplanes = None
+		extra = cfg.MODEL.EXTRA
+		self.deconv_with_bias = extra.DECONV_WITH_BIAS
+
+		super(PoseResNet_heatmap, self).__init__()
 		self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
 							   bias=False)
 		self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
@@ -231,15 +370,6 @@ class PoseResNet(nn.Module):
 		self.deconv_layer1_ = self._make_deconv_layer2(2048,1024)
 		self.deconv_layer2_ = self._make_deconv_layer2(1024,512)
 
-		self.deconv_layer1 = self._make_deconv_layer2(2048,1024)
-		self.deconv_layer2 = self._make_deconv_layer2(1024,512)
-		self.deconv_layer3 = self._make_deconv_layer2(512,128)
-		self.deconv_layer4 = self._make_deconv_layer2(128,64)
-		self.deconv_layer5 = self._make_deconv_layer2(64,1)
-		
-		# self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-		# self.deccam_trans = nn.Linear(2048, 3)
-		# self.deccam_rot = nn.Linear(2048, 3)
 		
 		self.final_layer =  nn.Sequential(
 			nn.Conv2d(
@@ -328,7 +458,7 @@ class PoseResNet(nn.Module):
 	def forward(self, x): # -> 3x512x512
 		# batch_size=len(x)
 		x = self.conv1(x) # -> 64x256x256
-		x_ = x
+	
 		x = self.bn1(x)
 		x = self.relu(x)
 		x = self.maxpool(x) # -> 64x128x128
@@ -338,20 +468,6 @@ class PoseResNet(nn.Module):
 		x_2 = self.layer3(x_1) # -> 1024x32x32
 		temp_x = self.layer4(x_2) # -> 2048x16x16
 
-		# avp_x = self.avgpool(temp_x).view(batch_size,2048)
-		
-		# pred_trans = self.deccam_trans(avp_x)
-		# pred_rot = self.deccam_rot(avp_x) 
-		# pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_trans.device)
-		# pred_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_trans.device)
-
-
-		depthmap = self.deconv_layer1(temp_x) # -> 1024x32x32
-		depthmap = self.deconv_layer2(depthmap+x_2) # -> 512x64x64
-		depthmap = self.deconv_layer3(depthmap+x_1) # -> 128x128x128
-		depthmap = self.deconv_layer4(depthmap) # -> 64x256x256
-		depthmap = self.deconv_layer5(depthmap) # -> 1x512x512
-
 
 		heatmap = self.deconv_layer1_(temp_x) # -> 1024x32x32
 		heatmap = self.deconv_layer2_(heatmap+x_2) # -> 512x64x64
@@ -359,10 +475,7 @@ class PoseResNet(nn.Module):
 		heatmap = self.final_layer(heatmap) # -> 24x64x64
 
 		res = {
-			'depthmap':depthmap, 
 			'heatmap':heatmap,
-			# 'pred_trans':pred_trans,
-			# 'pred_rot':pred_rot,
 		}
 		return res
 
@@ -423,7 +536,7 @@ resnet_spec = {18: (BasicBlock, [2, 2, 2, 2]),
 			   101: (Bottleneck, [3, 4, 23, 3]),
 			   152: (Bottleneck, [3, 8, 36, 3])}
 
-def get_pose_net(is_train, cfg=cfg,  **kwargs):
+def get_pose_net(model_n=None, cfg=cfg,  **kwargs):
 	num_layers = cfg.MODEL.EXTRA.NUM_LAYERS
 	# style = cfg.MODEL.STYLE
 
@@ -431,16 +544,17 @@ def get_pose_net(is_train, cfg=cfg,  **kwargs):
 
 	# if style == 'caffe':
 	#     block_class = Bottleneck_CAFFE
-
-	model = PoseResNet(block_class, layers, cfg, **kwargs)
-
+	if model_n == 'heatmap':
+		model = PoseResNet_heatmap(block_class, layers, cfg, **kwargs)
+	elif model_n == 'silhouette':
+		model = PoseResNet_silhouette(block_class, layers, cfg, **kwargs)
 	# if is_train and cfg.MODEL.INIT_WEIGHTS:
 	# 	model.init_weights(cfg.MODEL.PRETRAINED)
 
 	return model
 
 class Regressor2(nn.Module):
-	def __init__(self, heatmapfeat_dim, depthmapfeat_dim, smpl_mean_params):
+	def __init__(self, heatmapfeat_c, depthmapfeat_c, smpl_mean_params):
 		super().__init__()
 
 		npose = 24 * 6
@@ -458,6 +572,7 @@ class Regressor2(nn.Module):
 		self.flatten = nn.Flatten()
 		self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
 		self.fisheye_projection = FisheyeProjection()
+		self.fisheye_distortion = FisheyeDistortion()
 
 		self.conv_block0 = self._make_block(1,24)
 		self.conv_block1 = self._make_block(22,64) #512 512->256 256
@@ -486,7 +601,7 @@ class Regressor2(nn.Module):
 			block = self._make_bilinear(1024)
 			self.bilinear_layer_shape.append(block)	
 
-		self.fc1 = nn.Linear(heatmapfeat_dim, 1024)
+		self.fc1 = nn.Linear(heatmapfeat_c, 1024)
 		self.bn1 = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
 		self.relu1 = nn.ReLU()
 		self.drop1 = nn.Dropout()
@@ -495,7 +610,7 @@ class Regressor2(nn.Module):
 		# self.relu2 = nn.ReLU()
 		# self.drop2 = nn.Dropout()
 
-		self.fc1_ = nn.Linear(depthmapfeat_dim, 1024)
+		self.fc1_ = nn.Linear(depthmapfeat_c, 1024)
 		self.bn1_ = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
 		self.relu1_ = nn.ReLU()
 		self.drop1_ = nn.Dropout()
@@ -518,7 +633,10 @@ class Regressor2(nn.Module):
 			batch_size=64,
 			create_transl=False
 		)
-
+		self.smpl_layer = SMPL_Layer(
+			 gender='neutral',
+			 model_root=SMPL_MODEL_DIR
+		)
 		# mean_params = np.load(smpl_mean_params)
 		# init_pose = torch.from_numpy(mean_params['pose'][:]).unsqueeze(0)
 		# init_shape = torch.from_numpy(mean_params['shape'][:].astype('float32')).unsqueeze(0)
@@ -554,9 +672,9 @@ class Regressor2(nn.Module):
 
 	# def forward(self, heatmap, depthmap, pred_trans, pred_rot):
 		
-	def forward(self, heatmap, depthmap):
+	def forward(self, heatmap, silhouette):
 		x=heatmap # 24 64 64
-		x2=depthmap # 1 512 512
+		x2=silhouette # 1 512 512
 		# TODO : heatmap 입력 argmax로 차원당 1 하나씩
 		batch_size = x.shape[0]
 
@@ -590,7 +708,7 @@ class Regressor2(nn.Module):
 		x2 = self.avgpool(x2+residual_x2) # 512
 
 		heatmap_feat = x.squeeze()
-		depthmap_feat = x2.squeeze()
+		silhouette_feat = x2.squeeze()
 
 		pred_pose = torch.cat([heatmap_feat], 1) # 512
 		pred_pose = self.fc1(pred_pose)
@@ -604,7 +722,7 @@ class Regressor2(nn.Module):
 			pred_pose += pose_residual
 
 
-		pred_shape = torch.cat([depthmap_feat], 1) # 512
+		pred_shape = torch.cat([silhouette_feat], 1) # 512
 		pred_shape = self.fc1_(pred_shape)
 		pred_shape = self.bn1_(pred_shape)
 		pred_shape = self.relu1_(pred_shape)
@@ -617,7 +735,7 @@ class Regressor2(nn.Module):
 
 		pred_pose = self.decpose(pred_pose)
 		pred_shape = self.decshape(pred_shape)
-		total_feat = torch.cat([heatmap_feat, depthmap_feat], 1)
+		total_feat = torch.cat([heatmap_feat, silhouette_feat], 1)
 		pred_trans = self.deccam_trans(total_feat)
 		pred_rot = self.deccam_rot(total_feat) 
 
@@ -652,6 +770,36 @@ class Regressor2(nn.Module):
 		# pred_keypoints_2d = projection(pred_joints, pred_trans)
 		
 		# pred_keypoints_2d = self.fisheye_projection(pred_joints, pred_rot, pred_trans)
+		world_coord_vertices = self._world_coord(pred_vertices)
+		cam_coord_vertices = self._cam_coord(world_coord_vertices,pred_rot,pred_trans,batch_size)
+		
+		R = create_euler(pred_rot,True).view(batch_size,3,3)
+		T = pred_trans.view(batch_size,3)
+		cameras = OpenGLPerspectiveCameras(device=cam_coord_vertices.device, R=R, T=T)
+
+		raster_settings = RasterizationSettings(
+			image_size=512, 
+			blur_radius=0.0, 
+			faces_per_pixel=1, 
+		)
+		# TODO vertices to cam coord
+		# Create a silhouette shader
+		shader = SoftSilhouetteShader()
+
+		renderer = MeshRenderer(
+			rasterizer=MeshRasterizer(
+				cameras=cameras, 
+				raster_settings=raster_settings
+			),
+			shader=shader
+		)
+		faces = self.smpl_layer.th_faces
+		faces = faces[None].expand(batch_size, -1, -1).to(cam_coord_vertices.device)
+		meshes = Meshes(verts=cam_coord_vertices, faces=faces)
+		silhouette = renderer(meshes)
+		distortion_silhouette = self.fisheye_distortion(silhouette)
+		
+
 		pose = rotation_matrix_to_angle_axis(pred_rotmat.reshape(-1, 3, 3)).reshape(-1, 72)
 
 		
@@ -670,6 +818,7 @@ class Regressor2(nn.Module):
 			'pred_rot' : pred_rot,
 			# 'pred_shape': pred_shape,
 			# 'pred_pose': pred_pose,
+			'pred_silhouette' : distortion_silhouette[... , 3],
 		}
 		return res
 
@@ -752,7 +901,7 @@ class FisheyeProjection(nn.Module):
 		M = M.squeeze(1).to(points_3d.device)
 		self.K = self.K.to(points_3d.device)
 		# Transform points to camera coordinate system
-		points_homogeneous = torch.cat((points_3d, torch.ones((batch_size,22,1), device=points_3d.device)), dim=-1)
+		points_homogeneous = torch.cat((points_3d, torch.ones((batch_size,points_3d.shape[1],1), device=points_3d.device)), dim=-1)
 		# P_ext = torch.cat((self.M[:3,:3], self.t), dim=-1)
 		points_camera = torch.einsum('bij,bkj->bki',M,points_homogeneous)
 
@@ -774,3 +923,25 @@ class FisheyeProjection(nn.Module):
 			norm_res = res/torch.tensor([W,H]).to(res.device)
 			res = norm_res * torch.tensor(resize).to(res.device)
 		return res
+
+class FisheyeDistortion(nn.Module):
+	def __init__(self):
+		super().__init__()
+		self.D = torch.tensor([-0.05631891929412012, -0.0038333424842925286,
+			-0.00024681888617308917, -0.00012153386798050158])
+
+	def forward(self, x):
+		epsilon = 1e-9
+		# Normalize coordinates to [-1, 1]
+		x = (x - 0.5) * 2
+
+		# Compute radial distortion
+		r = torch.sqrt(torch.sum(x ** 2, dim=-1, keepdim=True) + epsilon)
+		theta = torch.atan2(r, torch.ones_like(r) + epsilon)
+		theta_d = theta * (1 + self.D[0] * theta**2 + self.D[1] * theta**4 + self.D[2] * theta**6 + self.D[3] * theta**8)
+		x_distorted = x * (theta_d / r)
+
+		# Rescale to [0, 1]
+		x_distorted = x_distorted / 2 + 0.5
+
+		return x_distorted

@@ -181,6 +181,16 @@ class heatmap_proj_loss(nn.Module):
         res = self.loss(x,label)
         return res
     
+class silhouette_loss(nn.Module):
+    def __init__(self) -> None:
+        nn.Module.__init__(self)
+        self.loss=nn.MSELoss()
+    
+    def forward(self,x,label):
+        res=None
+        res=self.loss(x,label)
+        return res
+
 _criterion_entrypoints = {
     'depth_criterion' : depth_loss,
     'projection_criterion' : kp_2d_loss,
@@ -188,6 +198,7 @@ _criterion_entrypoints = {
     'joint_3d_criterion' : kp_3d_loss,
     'heatmap_criterion' : heatmap_loss,
     'heatmap_proj_criterion' : heatmap_proj_loss,
+    'silhouette_criterion' : silhouette_loss,
 }
 
 

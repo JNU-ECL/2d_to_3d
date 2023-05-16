@@ -149,7 +149,30 @@ class temp_dataset(Dataset):
 			# transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
 		])
 		return transform(img)
-		
+	
+	def get_silhouette(self,img_path,resize=(512,512)):
+		img = cv2.imread(img_path,cv2.IMREAD_COLOR)
+		img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+		silhouette = np.zeros_like(img[:,:,0])
+	
+		not_black = np.any(img != [0, 0, 0], axis=-1)
+
+		silhouette[not_black] = 255
+
+		# h,w,c = img.shape
+		# c_h,c_w = h//2,w//2
+		# radius = min(c_h,c_w) + 100
+		# mask = np.zeros_like(img)
+		# cv2.circle(mask, (c_w,c_h), radius, (255, 255, 255), -1)
+		# cropped_img = cv2.bitwise_and(img, mask)
+		transform = transforms.Compose([
+			transforms.ToPILImage(),
+			transforms.Resize(resize, Image.BILINEAR),
+			transforms.ToTensor(),
+		])
+		return transform(silhouette)
+
 	def get_camera(self,json_path):
 		temp_json=None
 		with open(json_path,'r') as f:
@@ -355,7 +378,8 @@ class temp_dataset(Dataset):
 			joints_3d_world = self.get_3d_joints(json_path,cam_coord=False)
 			joints_3d_cam = self.get_3d_joints(json_path,cam_coord=True)
 			# joints_2d=self.get_2d_joints(json_path)
-			seg_image=self.get_rgba(seg_path)
+
+			silhouette_image=self.get_silhouette(seg_path)
 			camera_info=self.get_camera(json_path)
 			depth_map=self.get_depth(depth_path)
 			fisheye_joints_2d=self.get_fisheye_2d_joints(json_path,resize=(512,512))
@@ -367,7 +391,7 @@ class temp_dataset(Dataset):
 				'joints_3d' : joints_3d_world,
 				'joints_3d_cam' : joints_3d_cam,
 				# 'joints_2d' : joints_2d, 
-				'seg_image': seg_image,
+				'silhouette': silhouette_image,
 				'depth' : depth_map,
 				'camera_info': camera_info,
 				'fisheye_joints_2d' : fisheye_joints_2d,
