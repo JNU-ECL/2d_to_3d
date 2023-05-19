@@ -50,8 +50,8 @@ class TempModel(nn.Module):
 		super().__init__()
 		only_resnet=False
 		self.heatmap_module = get_pose_net('heatmap')
-		self.silhouette_module = get_pose_net('silhouette')
-		self.regressor2=Regressor2(depthmapfeat_c=512,heatmapfeat_c=512,smpl_mean_params=SMPL_MEAN_PARAMS)
+		self.depthmap_module = get_pose_net('depth')
+		self.regressor=Regressor(depthmapfeat_c=512,heatmapfeat_c=512)
 		
 		if pretrained_path:
 			tempmodel_ckpt = torch.load(pretrained_path)
@@ -65,42 +65,24 @@ class TempModel(nn.Module):
 			else:
 				self.load_state_dict(tempmodel_ckpt)
 
-	def forward(self, x, is_train):
+	def forward(self, x):
 		res = {}
 		image_ = x['image']
-
-		# trans_, rot_ = x['camera_info']
 		
 		heatmap_feat=self.heatmap_module(image_)
-		silhouette_feat=self.silhouette_module(image_)
-		
-		if is_train:
-			depth_ = x['depth']
-			heatmap_ = x['heatmap']
-			silhouette_ = x['silhouette']
-			regressor2_res_dict=self.regressor2(
-				heatmap_,
-				silhouette_,
-				# trans_,
-				# rot_,
-				# feature_dict['heatmap'],
-				# feature_dict['depthmap'],
-				# feature_dict['heatmap'].detach(),
-				# feature_dict['depthmap'].detach(),
-				)
-		else:
-			regressor2_res_dict=self.regressor2(
-				heatmap_feat['heatmap'].detach(),
-				silhouette_feat['silhouette'].detach(),
+		depth_feat=self.depthmap_module(image_)
 
-				)
+		regressor_res_dict=self.regressor(
+			heatmap_feat['embed_feature'].detach(),
+			depth_feat['embed_feature'].detach(),
+		)
+
+	
 
 		res.update({
-   	  		'regressor2_dict' : regressor2_res_dict,
-	 		'pred_silhouette' : silhouette_feat['silhouette'],
+   	  		'regressor_dict' : regressor_res_dict,
+	 		'depthmap' : depth_feat['depthmap'],
 	 		'heatmap' : heatmap_feat['heatmap'],
-			# 'pred_trans' : feature_dict['pred_trans'],
-			# 'pred_rot' : feature_dict['pred_rot']
 		})    
 		return res
 
@@ -222,16 +204,15 @@ class Bottleneck(nn.Module):
 
 		return out
 	
-class PoseResNet_silhouette(nn.Module):
+class PoseResNet_depth(nn.Module):
 
 	def __init__(self, block, layers, cfg, **kwargs):
 		self.inplanes = 64
-		self.deconv1_inplanes = None
-		self.deconv2_inplanes = None
+
 		extra = cfg.MODEL.EXTRA
 		self.deconv_with_bias = extra.DECONV_WITH_BIAS
 
-		super(PoseResNet_silhouette, self).__init__()
+		super(PoseResNet_depth, self).__init__()
 		self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
 							   bias=False)
 		self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
@@ -242,14 +223,20 @@ class PoseResNet_silhouette(nn.Module):
 		self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
 		self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
 
-		self.deconv_layer1 = self._make_deconv_layer2(2048,1024)
-		self.deconv_layer2 = self._make_deconv_layer2(1024,512)
-		self.deconv_layer3 = self._make_deconv_layer2(512,128)
-		self.deconv_layer4 = self._make_deconv_layer2(128,64)
-		self.deconv_layer5 = self._make_deconv_layer2(64,1)
+		# self.deconv_layer1 = self._make_deconv_layer(2048,1024)
+		# self.deconv_layer2 = self._make_deconv_layer(1024,512)
+		# self.deconv_layer3 = self._make_deconv_layer(512,256)
+		# self.deconv_layer4 = self._make_deconv_layer(256,128)
+		# self.deconv_layer5 = self._make_deconv_layer(128,1)
+
+		self.deconv_layer1 = self._make_deconv_layer(512,256)
+		self.deconv_layer2 = self._make_deconv_layer(256,128)
+		self.deconv_layer3 = self._make_deconv_layer(128,64)
+		self.deconv_layer4 = self._make_deconv_layer(64,32)
+		self.deconv_layer5 = self._make_deconv_layer(32,1)
 		
 
-	def _make_deconv_layer2(self,in_planes, out_planes, kernel=4, stride=2, padding=1):
+	def _make_deconv_layer(self,in_planes, out_planes, kernel=4, stride=2, padding=1):
 		return nn.Sequential(
 			nn.ConvTranspose2d(
 				in_channels=in_planes,
@@ -280,69 +267,28 @@ class PoseResNet_silhouette(nn.Module):
 
 		return nn.Sequential(*layers)
 
-	def _get_deconv_cfg(self, deconv_kernel, index):
-		if deconv_kernel == 4:
-			padding = 1
-			output_padding = 0
-		elif deconv_kernel == 3:
-			padding = 1
-			output_padding = 1
-		elif deconv_kernel == 2:
-			padding = 0
-			output_padding = 0
 
-		return deconv_kernel, padding, output_padding
-
-	def _make_deconv_layer(self, num_layers, num_filters, num_kernels, init_inplanes):
-		assert num_layers == len(num_filters), \
-			'ERROR: num_deconv_layers is different len(num_deconv_filters)'
-		assert num_layers == len(num_kernels), \
-			'ERROR: num_deconv_layers is different len(num_deconv_filters)'
-
-		layers = []
-		for i in range(num_layers):
-			# 4, 1, 0
-			kernel, padding, output_padding = \
-				self._get_deconv_cfg(num_kernels[i], i)
-			
-			planes = num_filters[i] # [256,128,64,32,3]
-			layers.append(
-				nn.ConvTranspose2d(
-					in_channels=init_inplanes,
-					out_channels=planes,
-					kernel_size=kernel,
-					stride=2,
-					padding=padding,
-					output_padding=output_padding,
-					bias=self.deconv_with_bias))
-			layers.append(nn.BatchNorm2d(planes, momentum=BN_MOMENTUM))
-			layers.append(nn.ReLU(inplace=True))
-			init_inplanes = planes
-
-		return nn.Sequential(*layers)
-
-	def forward(self, x): # -> 3x512x512
+	def forward(self, x): # -> 3x256x256
 		# batch_size=len(x)
-		x = self.conv1(x) # -> 64x256x256
-		x_ = x
+		x = self.conv1(x) # -> 64x128x128
 		x = self.bn1(x)
 		x = self.relu(x)
-		x = self.maxpool(x) # -> 64x128x128
+		x = self.maxpool(x) # -> 64x64x64
 
-		x_0 = self.layer1(x) # -> 256x128x128
-		x_1 = self.layer2(x_0) # -> 512x64x64
-		x_2 = self.layer3(x_1) # -> 1024x32x32
-		temp_x = self.layer4(x_2) # -> 2048x16x16
+		x_0 = self.layer1(x) # -> 64x64x64
+		x_1 = self.layer2(x_0) # -> 128x32x32
+		x_2 = self.layer3(x_1) # -> 256x16x16
+		temp_x = self.layer4(x_2) # -> 512x8x8
 
-		silhouette = self.deconv_layer1(temp_x) # -> 1024x32x32
-		silhouette = self.deconv_layer2(silhouette+x_2) # -> 512x64x64
-		silhouette = self.deconv_layer3(silhouette+x_1) # -> 128x128x128
-		silhouette = self.deconv_layer4(silhouette) # -> 64x256x256
-		silhouette = self.deconv_layer5(silhouette) # -> 1x512x512
-
+		depthmap = self.deconv_layer1(temp_x) # -> 256x16x16
+		depthmap = self.deconv_layer2(depthmap+x_2) # -> 128x32x32
+		depthmap = self.deconv_layer3(depthmap+x_1) # -> 64x64x64
+		depthmap = self.deconv_layer4(depthmap+x_0) # -> 32x128x128
+		depthmap = self.deconv_layer5(depthmap) # -> 1x256x256
 
 		res = {
-			'silhouette':silhouette, 
+			'depthmap':depthmap, 
+			'embed_feature':temp_x,
 		}
 
 		return res
@@ -351,8 +297,6 @@ class PoseResNet_heatmap(nn.Module):
 
 	def __init__(self, block, layers, cfg, **kwargs):
 		self.inplanes = 64
-		self.deconv1_inplanes = None
-		self.deconv2_inplanes = None
 		extra = cfg.MODEL.EXTRA
 		self.deconv_with_bias = extra.DECONV_WITH_BIAS
 
@@ -367,23 +311,28 @@ class PoseResNet_heatmap(nn.Module):
 		self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
 		self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
 
-		self.deconv_layer1_ = self._make_deconv_layer2(2048,1024)
-		self.deconv_layer2_ = self._make_deconv_layer2(1024,512)
+		# self.deconv_layer1_ = self._make_deconv_layer(2048,1024)
+		# self.deconv_layer2_ = self._make_deconv_layer(1024,512)
+		# self.deconv_layer3_ = self._make_deconv_layer(512,256)
+		
+		self.deconv_layer1_ = self._make_deconv_layer(512,256)
+		self.deconv_layer2_ = self._make_deconv_layer(256,128)
+		self.deconv_layer3_ = self._make_deconv_layer(128,64)
 
 		
 		self.final_layer =  nn.Sequential(
 			nn.Conv2d(
-			in_channels=512,
-			out_channels=22,
+			in_channels=64,
+			out_channels=15,
 			kernel_size=3,
 			stride=1,
 			padding=1
 			),
-			nn.BatchNorm2d(22, momentum=BN_MOMENTUM),
+			nn.BatchNorm2d(15, momentum=BN_MOMENTUM),
 			nn.ReLU(inplace=True)
 		)
 
-	def _make_deconv_layer2(self,in_planes, out_planes, kernel=4, stride=2, padding=1):
+	def _make_deconv_layer(self,in_planes, out_planes, kernel=4, stride=2, padding=1):
 		return nn.Sequential(
 			nn.ConvTranspose2d(
 				in_channels=in_planes,
@@ -414,120 +363,29 @@ class PoseResNet_heatmap(nn.Module):
 
 		return nn.Sequential(*layers)
 
-	def _get_deconv_cfg(self, deconv_kernel, index):
-		if deconv_kernel == 4:
-			padding = 1
-			output_padding = 0
-		elif deconv_kernel == 3:
-			padding = 1
-			output_padding = 1
-		elif deconv_kernel == 2:
-			padding = 0
-			output_padding = 0
-
-		return deconv_kernel, padding, output_padding
-
-	def _make_deconv_layer(self, num_layers, num_filters, num_kernels, init_inplanes):
-		assert num_layers == len(num_filters), \
-			'ERROR: num_deconv_layers is different len(num_deconv_filters)'
-		assert num_layers == len(num_kernels), \
-			'ERROR: num_deconv_layers is different len(num_deconv_filters)'
-
-		layers = []
-		for i in range(num_layers):
-			# 4, 1, 0
-			kernel, padding, output_padding = \
-				self._get_deconv_cfg(num_kernels[i], i)
-			
-			planes = num_filters[i] # [256,128,64,32,3]
-			layers.append(
-				nn.ConvTranspose2d(
-					in_channels=init_inplanes,
-					out_channels=planes,
-					kernel_size=kernel,
-					stride=2,
-					padding=padding,
-					output_padding=output_padding,
-					bias=self.deconv_with_bias))
-			layers.append(nn.BatchNorm2d(planes, momentum=BN_MOMENTUM))
-			layers.append(nn.ReLU(inplace=True))
-			init_inplanes = planes
-
-		return nn.Sequential(*layers)
-
-	def forward(self, x): # -> 3x512x512
+	def forward(self, x): # -> 3x256x256
 		# batch_size=len(x)
-		x = self.conv1(x) # -> 64x256x256
-	
+		x = self.conv1(x) # -> 64x128x128
 		x = self.bn1(x)
 		x = self.relu(x)
-		x = self.maxpool(x) # -> 64x128x128
+		x = self.maxpool(x) # -> 64x64x64
 
-		x_0 = self.layer1(x) # -> 256x128x128
-		x_1 = self.layer2(x_0) # -> 512x64x64
-		x_2 = self.layer3(x_1) # -> 1024x32x32
-		temp_x = self.layer4(x_2) # -> 2048x16x16
+		x_0 = self.layer1(x) # -> 64x64x64     //256x64x64
+		x_1 = self.layer2(x_0) # -> 128x32x32  //512x32x32
+		x_2 = self.layer3(x_1) # -> 256x16x16  //1024x16x16
+		temp_x = self.layer4(x_2) # -> 512x8x8 // 2048x8x8
 
-
-		heatmap = self.deconv_layer1_(temp_x) # -> 1024x32x32
-		heatmap = self.deconv_layer2_(heatmap+x_2) # -> 512x64x64
-
-		heatmap = self.final_layer(heatmap) # -> 24x64x64
+		heatmap_1 = self.deconv_layer1_(temp_x) # -> 256x16x16 # change all down
+		heatmap_2 = self.deconv_layer2_(heatmap_1+x_2) # -> 128x32x32
+		heatmap_3 = self.deconv_layer3_(heatmap_2+x_1) # -> 64x64x64
+	
+		heatmap_4 = self.final_layer(heatmap_3) # -> 15x64x64
 
 		res = {
-			'heatmap':heatmap,
+			'heatmap':heatmap_4,
+			'embed_feature':temp_x,
 		}
 		return res
-
-	def init_weights(self, pretrained=''):
-		if os.path.isfile(pretrained):
-			logger.info('=> init deconv weights from normal distribution')
-			for name, m in self.deconv_layers.named_modules():
-				if isinstance(m, nn.ConvTranspose2d):
-					logger.info('=> init {}.weight as normal(0, 0.001)'.format(name))
-					logger.info('=> init {}.bias as 0'.format(name))
-					nn.init.normal_(m.weight, std=0.001)
-					if self.deconv_with_bias:
-						nn.init.constant_(m.bias, 0)
-				elif isinstance(m, nn.BatchNorm2d):
-					logger.info('=> init {}.weight as 1'.format(name))
-					logger.info('=> init {}.bias as 0'.format(name))
-					nn.init.constant_(m.weight, 1)
-					nn.init.constant_(m.bias, 0)
-			logger.info('=> init final conv weights from normal distribution')
-			for m in self.final_layer.modules():
-				if isinstance(m, nn.Conv2d):
-					# nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-					logger.info('=> init {}.weight as normal(0, 0.001)'.format(name))
-					logger.info('=> init {}.bias as 0'.format(name))
-					nn.init.normal_(m.weight, std=0.001)
-					nn.init.constant_(m.bias, 0)
-
-			# pretrained_state_dict = torch.load(pretrained)
-			logger.info('=> loading pretrained model {}'.format(pretrained))
-			# self.load_state_dict(pretrained_state_dict, strict=False)
-			checkpoint = torch.load(pretrained)
-			if isinstance(checkpoint, OrderedDict):
-				state_dict = checkpoint
-			elif isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-				state_dict_old = checkpoint['state_dict']
-				state_dict = OrderedDict()
-				# delete 'module.' because it is saved from DataParallel module
-				for key in state_dict_old.keys():
-					if key.startswith('module.'):
-						# state_dict[key[7:]] = state_dict[key]
-						# state_dict.pop(key)
-						state_dict[key[7:]] = state_dict_old[key]
-					else:
-						state_dict[key] = state_dict_old[key]
-			else:
-				raise RuntimeError(
-					'No state_dict found in checkpoint file {}'.format(pretrained))
-			self.load_state_dict(state_dict, strict=False)
-		else:
-			logger.error('=> imagenet pretrained model dose not exist')
-			logger.error('=> please download it first')
-			raise ValueError('imagenet pretrained model does not exist')
 
 
 resnet_spec = {18: (BasicBlock, [2, 2, 2, 2]),
@@ -539,113 +397,48 @@ resnet_spec = {18: (BasicBlock, [2, 2, 2, 2]),
 def get_pose_net(model_n=None, cfg=cfg,  **kwargs):
 	num_layers = cfg.MODEL.EXTRA.NUM_LAYERS
 	# style = cfg.MODEL.STYLE
-
-	block_class, layers = resnet_spec[num_layers]
+	
+	block_class, layers = resnet_spec[34]
 
 	# if style == 'caffe':
 	#     block_class = Bottleneck_CAFFE
 	if model_n == 'heatmap':
 		model = PoseResNet_heatmap(block_class, layers, cfg, **kwargs)
-	elif model_n == 'silhouette':
-		model = PoseResNet_silhouette(block_class, layers, cfg, **kwargs)
+	elif model_n == 'depth':
+		model = PoseResNet_depth(block_class, layers, cfg, **kwargs)
 	# if is_train and cfg.MODEL.INIT_WEIGHTS:
 	# 	model.init_weights(cfg.MODEL.PRETRAINED)
 
 	return model
 
-class Regressor2(nn.Module):
-	def __init__(self, heatmapfeat_c, depthmapfeat_c, smpl_mean_params):
+class Regressor(nn.Module):
+	def __init__(self, heatmapfeat_c, depthmapfeat_c ):
 		super().__init__()
-
-		npose = 24 * 6
-		self.procrustes={
-			'rotation': torch.tensor([[ 0.9999647 , -0.00426632,  0.00723915],
-										[ 0.00411011,  0.99976134,  0.02145697],
-										[-0.00732896, -0.02142646,  0.9997435 ]]).T,
-			'scale': 92.3,
-			'translation': torch.tensor([  0.9100, 115.3339,  -2.7504])
-		}
-		self.Mmaya = torch.tensor([[1., 0., 0., 0.],
-							[0., -1., 0., 0.],
-							[0., 0., -1., 0.],
-							[0., 0., 0., 1.]])
+		njoint = 16 * 3 
 		self.flatten = nn.Flatten()
 		self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-		self.fisheye_projection = FisheyeProjection()
-		self.fisheye_distortion = FisheyeDistortion()
 
-		self.conv_block0 = self._make_block(1,24)
-		self.conv_block1 = self._make_block(22,64) #512 512->256 256
-		self.conv_block2 = self._make_block(64,128) #256 256->128 128
-		self.conv_block3 = self._make_block(128,256) #128 128->64 64
-		self.conv_block4 = self._make_block(256,512) #64 64->32 32
-
-		self.conv_block0_ = self._make_block(1,24)
-		self.conv_block1_ = self._make_block(24,64) #512 512->256 256
-		self.conv_block2_ = self._make_block(64,128) #256 256->128 128
-		self.conv_block3_ = self._make_block(128,256) #128 128->64 64
-		self.conv_block4_ = self._make_block(256,512) #64 64->32 32
-		# self.conv_block5 = self._make_block(512,1024) #32 32->16 16
-		# self.conv_block6 = self._make_block(1024,2048) #16 16->4 4 : 32768
-		
-		self.downsample_heat = self._make_downsample(22,512,4,20,0)
-		self.downsample_depth = self._make_downsample(1,512,17,33,0)
 		self.bilinear_layer_pose = nn.ModuleList()
-		self.bilinear_layer_shape = nn.ModuleList()
+
 
 		for _ in range(2):
 			block = self._make_bilinear(1024)
 			self.bilinear_layer_pose.append(block)
 
-		for _ in range(1):
-			block = self._make_bilinear(1024)
-			self.bilinear_layer_shape.append(block)	
 
-		self.fc1 = nn.Linear(heatmapfeat_c, 1024)
+		self.fc1 = nn.Linear(heatmapfeat_c + depthmapfeat_c, 1024)
 		self.bn1 = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
 		self.relu1 = nn.ReLU()
 		self.drop1 = nn.Dropout()
-		# self.fc2 = nn.Linear(1024, 1024)
-		# self.bn2 = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
-		# self.relu2 = nn.ReLU()
-		# self.drop2 = nn.Dropout()
 
-		self.fc1_ = nn.Linear(depthmapfeat_c, 1024)
-		self.bn1_ = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
-		self.relu1_ = nn.ReLU()
-		self.drop1_ = nn.Dropout()
-		# self.fc2_ = nn.Linear(1024, 1024)
-		# self.bn2_ = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
-		# self.relu2_ = nn.ReLU()
-		# self.drop2_ = nn.Dropout()
 
-		self.decpose = nn.Linear(1024, npose)
-		self.decshape = nn.Linear(1024, 10)
+		self.decjoint = nn.Linear(1024, njoint)
 		self.deccam_trans = nn.Linear(1024, 3)
 		self.deccam_rot = nn.Linear(1024, 3)
-		nn.init.xavier_uniform_(self.decpose.weight, gain=0.01)
-		nn.init.xavier_uniform_(self.decshape.weight, gain=0.01)
+
+		nn.init.xavier_uniform_(self.decjoint.weight, gain=0.01)
 		nn.init.xavier_uniform_(self.deccam_trans.weight, gain=0.01)
 		nn.init.xavier_uniform_(self.deccam_rot.weight, gain=0.01)
-
-		self.smpl = SMPL(
-			SMPL_MODEL_DIR,
-			batch_size=64,
-			create_transl=False
-		)
-		self.smpl_layer = SMPL_Layer(
-			 gender='neutral',
-			 model_root=SMPL_MODEL_DIR
-		)
-		# mean_params = np.load(smpl_mean_params)
-		# init_pose = torch.from_numpy(mean_params['pose'][:]).unsqueeze(0)
-		# init_shape = torch.from_numpy(mean_params['shape'][:].astype('float32')).unsqueeze(0)
-		# init_cam_trans = torch.from_numpy(mean_params['cam']).unsqueeze(0)
-		# init_cam_rot = torch.from_numpy(mean_params['cam']).unsqueeze(0)
-		# self.register_buffer('init_pose', init_pose)
-		# self.register_buffer('init_shape', init_shape)
-		# self.register_buffer('init_cam_trans', init_cam_trans)
-		# self.register_buffer('init_cam_rot', init_cam_rot)
 
 	def _make_bilinear(self,in_dim):
 		return nn.Sequential(
@@ -658,104 +451,49 @@ class Regressor2(nn.Module):
 			nn.ReLU(),
 			nn.Dropout(),
 		)
-	def _make_downsample(self, in_channels, out_channels, kernel, stride, padding):
-		return nn.Sequential(
-			nn.Conv2d(in_channels=in_channels,
-					  out_channels=out_channels,
-					  kernel_size=kernel,
-					  stride=stride,
-					  padding=padding
-					  ),
-			nn.BatchNorm2d(out_channels,momentum=BN_MOMENTUM),
-			nn.ReLU(inplace=True)
-		)
 
-	# def forward(self, heatmap, depthmap, pred_trans, pred_rot):
 		
-	def forward(self, heatmap, silhouette):
-		x=heatmap # 24 64 64
-		x2=silhouette # 1 512 512
+	def forward(self, heatmap_embed, depthmap_embed):
+		x=heatmap_embed # 512x8x8
+		x2=depthmap_embed # 512x8x8
 		# TODO : heatmap 입력 argmax로 차원당 1 하나씩
 		batch_size = x.shape[0]
 
-		# max_values, max_indices = torch.max(heatmap.view(batch_size,24,-1), dim=2)
-		# y_coords = max_indices // 64
-		# x_coords = max_indices % 64
+		x = self.avgpool(x) #512
 
-
-		# coords = torch.stack((x_coords, y_coords), dim=2)
-		# coords = self.flatten(coords) # 10x24x2
-
-
-		residual_x = x # 22x64x64
-		residual_x2 = x2 # 1X512x512
-		
-	
-
-		x = self.conv_block1(x)
-		x = self.conv_block2(x)
-		x = self.conv_block3(x)
-		x = self.conv_block4(x)
-		residual_x = self.downsample_heat(residual_x)
-		x = self.avgpool(x+residual_x) #512
-
-		x2 = self.conv_block0_(x2) #->256
-		x2 = self.conv_block1_(x2) #->128
-		x2 = self.conv_block2_(x2) #->64
-		x2 = self.conv_block3_(x2) #->32
-		x2 = self.conv_block4_(x2)
-		residual_x2 = self.downsample_depth(residual_x2)
-		x2 = self.avgpool(x2+residual_x2) # 512
+		x2 = self.avgpool(x2) # 512
 
 		heatmap_feat = x.squeeze()
-		silhouette_feat = x2.squeeze()
+		depth_feat = x2.squeeze()
 
-		pred_pose = torch.cat([heatmap_feat], 1) # 512
-		pred_pose = self.fc1(pred_pose)
-		pred_pose = self.bn1(pred_pose)
-		pred_pose = self.relu1(pred_pose)
-		pred_pose = self.drop1(pred_pose)
-		pose_residual = pred_pose
+
+		total_feat = torch.cat([heatmap_feat, depth_feat], 1)
+
+		pred_joint = self.fc1(total_feat)
+		pred_joint = self.bn1(pred_joint)
+		pred_joint = self.relu1(pred_joint)
+		pred_joint = self.drop1(pred_joint)
+		pose_residual = pred_joint
 
 		for layer in self.bilinear_layer_pose:
-			pred_pose = layer(pred_pose)
-			pred_pose += pose_residual
+			pred_joint = layer(pred_joint)
+			pred_joint += pose_residual
 
 
-		pred_shape = torch.cat([silhouette_feat], 1) # 512
-		pred_shape = self.fc1_(pred_shape)
-		pred_shape = self.bn1_(pred_shape)
-		pred_shape = self.relu1_(pred_shape)
-		pred_shape = self.drop1_(pred_shape)
-		shape_residual = pred_shape
+		pred_joint = self.decjoint(pred_joint).view(-1,16,3)
+		# pred_trans = self.deccam_trans(total_feat)
+		# pred_rot = self.deccam_rot(total_feat) 
 		
-		for layer in self.bilinear_layer_shape:
-			pred_shape = layer(pred_shape)
-			pred_shape += shape_residual
+		# pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_trans.device)
+		# pred_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_trans.device)
 
-		pred_pose = self.decpose(pred_pose)
-		pred_shape = self.decshape(pred_shape)
-		total_feat = torch.cat([heatmap_feat, silhouette_feat], 1)
-		pred_trans = self.deccam_trans(total_feat)
-		pred_rot = self.deccam_rot(total_feat) 
-
-		pred_rotmat = rot6d_to_rotmat(pred_pose).view(batch_size, 24, 3, 3)
-
-		pred_output = self.smpl(
-			betas=pred_shape,
-			body_pose=pred_rotmat[:, 1:],
-			global_orient=pred_rotmat[:, 0].unsqueeze(1),
-			pose2rot=False
-		)
-
+		"""
 		pred_vertices = pred_output.vertices
 		pred_joints = torch.concat((pred_output.joints[:,:13,:],
 									pred_output.joints[:,16:25,:]),dim=1)
 		pred_joints_raw = pred_output.joints[:,:25,:]
 
 		
-		pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_joints.device)
-		pred_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_joints.device)
 
 		world_coord_joints_raw = self._world_coord(pred_joints_raw)
 		cam_coord_joints_raw = self._cam_coord(world_coord_joints_raw,pred_rot,pred_trans,batch_size)
@@ -802,23 +540,11 @@ class Regressor2(nn.Module):
 
 		pose = rotation_matrix_to_angle_axis(pred_rotmat.reshape(-1, 3, 3)).reshape(-1, 72)
 
-		
+		"""
 		res = {
-			'theta'  : torch.cat([pred_trans, pred_shape, pose], dim=1),
-			'verts'  : pred_vertices,
-			'fisheye_kp_2d'  : pred_keypoints_2d,
-			'kp_3d_world'  : world_coord_joints,
-			'kp_3d_world_raw' : world_coord_joints_raw,
-			'kp_3d_cam' :cam_coord_joints,
-			'kp_3d_cam_raw' : cam_coord_joints_raw,
-			'pred_heatmap_smpl' : pred_heatmap,
-			# 'smpl_kp_3d' : pred_smpl_joints,
-			'rotmat' : pred_rotmat,
-			'pred_trans' : pred_trans,
-			'pred_rot' : pred_rot,
-			# 'pred_shape': pred_shape,
-			# 'pred_pose': pred_pose,
-			'pred_silhouette' : distortion_silhouette[... , 3],
+			# 'pred_trans' : pred_trans,
+			# 'pred_rot' : pred_rot,
+			'pred_joint': pred_joint,
 		}
 		return res
 

@@ -145,8 +145,8 @@ class temp_dataset(Dataset):
 		transform = transforms.Compose([
 			transforms.ToPILImage(),
 			transforms.Resize(resize, Image.BILINEAR),
+			transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
 			transforms.ToTensor(),
-			# transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
 		])
 		return transform(img)
 	
