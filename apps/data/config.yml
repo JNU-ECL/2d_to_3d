@@ -10,8 +10,8 @@ transforms:
   norm: Neck
 
 data_loader:
-  batch_size: 2
+  batch_size: 64
   shuffle: True
 
 eval:
-  output_file: /dataset/data/eval_res.json
+  output_file: /dataset/data/resnet34endtoendheatmaponeskipdepth3skipsiglayer5_layer4_heatmapcustomdepthcustomdepmapdepthembed.json

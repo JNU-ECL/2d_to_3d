@@ -46,25 +46,45 @@ use_cuda = torch.cuda.is_available()
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str =None):
+	def __init__(self,pretrained_path:str ='/workspace/2d_to_3d/apps/exp528/best.pth', load_heatmap=True, load_depthmap=True, load_regressor=True):
 		super().__init__()
-		only_resnet=False
+		load_heatmap=load_heatmap
+		load_depthmap=load_depthmap
+		load_regressor=load_regressor
 		self.heatmap_module = get_pose_net('heatmap')
 		self.depthmap_module = get_pose_net('depth')
 		self.regressor=Regressor(depthmapfeat_c=512,heatmapfeat_c=512)
 		
 		if pretrained_path:
 			tempmodel_ckpt = torch.load(pretrained_path)
-			if only_resnet:
-				feature_model1_state_dict = OrderedDict()
-				for k,v in tempmodel_ckpt.items():
-					if k.startswith('feature_model1.'):
-						new_key = k[len('feature_model1.'):]
-						feature_model1_state_dict[new_key] = v
-				self.feature_model1.load_state_dict(feature_model1_state_dict)
-			else:
+			if load_heatmap and load_depthmap and load_regressor:
 				self.load_state_dict(tempmodel_ckpt)
-
+				if not load_regressor:
+					heatmap_state_dict = OrderedDict()
+					depthmap_state_dict = OrderedDict()
+					if load_heatmap and load_depthmap:
+						for k,v in tempmodel_ckpt.items():
+							if k.startswith('heatmap_module.'):
+								new_key = k[len('heatmap_module.'):]
+								heatmap_state_dict[new_key] = v
+							if k.startswith('depthmap_module.'):
+								new_key = k[len('depthmap_module.'):]
+								depthmap_state_dict[new_key] = v
+						self.heatmap_module.load_state_dict(heatmap_state_dict)
+						self.depthmap_module.load_state_dict(depthmap_state_dict)
+					elif load_heatmap:
+						for k,v in tempmodel_ckpt.items():
+							if k.startswith('heatmap_module.'):
+								new_key = k[len('heatmap_module.'):]
+								heatmap_state_dict[new_key] = v
+						self.heatmap_module.load_state_dict(heatmap_state_dict)
+					else:
+						for k,v in tempmodel_ckpt.items():
+							if k.startswith('depthmap_module.'):
+								new_key = k[len('depthmap_module.'):]
+								depthmap_state_dict[new_key] = v
+						self.depthmap_module.load_state_dict(depthmap_state_dict)
+				
 	def forward(self, x):
 		res = {}
 		image_ = x['image']
@@ -73,8 +93,10 @@ class TempModel(nn.Module):
 		depth_feat=self.depthmap_module(image_)
 
 		regressor_res_dict=self.regressor(
-			heatmap_feat['embed_feature'].detach(),
-			depth_feat['embed_feature'].detach(),
+			heatmap_feat['embed_feature'],
+			# heatmap_feat['heatmap'],
+			depth_feat['embed_feature'],
+			depth_feat['depthmap'],
 		)
 
 	
@@ -82,6 +104,7 @@ class TempModel(nn.Module):
 		res.update({
    	  		'regressor_dict' : regressor_res_dict,
 	 		'depthmap' : depth_feat['depthmap'],
+			'silhouette' : depth_feat['silhouette'],
 	 		'heatmap' : heatmap_feat['heatmap'],
 		})    
 		return res
@@ -228,13 +251,48 @@ class PoseResNet_depth(nn.Module):
 		# self.deconv_layer3 = self._make_deconv_layer(512,256)
 		# self.deconv_layer4 = self._make_deconv_layer(256,128)
 		# self.deconv_layer5 = self._make_deconv_layer(128,1)
+		# self.deconv_layer5_ = nn.Sequential(
+		# 	nn.ConvTranspose2d(
+		# 		in_channels=128,
+		# 		out_channels=1,
+		# 		kernel_size=4,
+		# 		stride=2,
+		# 		padding=1,
+		# 		bias=self.deconv_with_bias
+		# 					   ),
+		# 	nn.BatchNorm2d(1, momentum=BN_MOMENTUM),
+		# 	nn.ReLU(inplace=True),
+		# 	)
 
 		self.deconv_layer1 = self._make_deconv_layer(512,256)
 		self.deconv_layer2 = self._make_deconv_layer(256,128)
 		self.deconv_layer3 = self._make_deconv_layer(128,64)
 		self.deconv_layer4 = self._make_deconv_layer(64,32)
-		self.deconv_layer5 = self._make_deconv_layer(32,1)
-		
+		self.deconv_layer4_ = self._make_deconv_layer(64,32)
+		self.deconv_layer5 = nn.Sequential(
+			nn.ConvTranspose2d(
+				in_channels=32,
+				out_channels=1,
+				kernel_size=4,
+				stride=2,
+				padding=1,
+				bias=self.deconv_with_bias
+							   ),
+			nn.BatchNorm2d(1, momentum=BN_MOMENTUM),
+			nn.Sigmoid(),
+			)
+		self.deconv_layer5_ = nn.Sequential(
+			nn.ConvTranspose2d(
+				in_channels=32,
+				out_channels=1,
+				kernel_size=4,
+				stride=2,
+				padding=1,
+				bias=self.deconv_with_bias
+							   ),
+			nn.BatchNorm2d(1, momentum=BN_MOMENTUM),
+			nn.ReLU(inplace=True),
+			)
 
 	def _make_deconv_layer(self,in_planes, out_planes, kernel=4, stride=2, padding=1):
 		return nn.Sequential(
@@ -282,12 +340,17 @@ class PoseResNet_depth(nn.Module):
 
 		depthmap = self.deconv_layer1(temp_x) # -> 256x16x16
 		depthmap = self.deconv_layer2(depthmap+x_2) # -> 128x32x32
-		depthmap = self.deconv_layer3(depthmap+x_1) # -> 64x64x64
-		depthmap = self.deconv_layer4(depthmap+x_0) # -> 32x128x128
+		depthmap_ = self.deconv_layer3(depthmap+x_1) # -> 64x64x64
+
+		depthmap = self.deconv_layer4(depthmap_+x_0) # -> 32x128x128
+		silhouette = self.deconv_layer4_(depthmap_+x_0) # -> 32x128x128
+
 		depthmap = self.deconv_layer5(depthmap) # -> 1x256x256
+		silhouette = self.deconv_layer5_(silhouette) # -> 1x256x256
 
 		res = {
 			'depthmap':depthmap, 
+			'silhouette' :silhouette,
 			'embed_feature':temp_x,
 		}
 
@@ -329,7 +392,7 @@ class PoseResNet_heatmap(nn.Module):
 			padding=1
 			),
 			nn.BatchNorm2d(15, momentum=BN_MOMENTUM),
-			nn.ReLU(inplace=True)
+			CustomActivation(),
 		)
 
 	def _make_deconv_layer(self,in_planes, out_planes, kernel=4, stride=2, padding=1):
@@ -377,7 +440,7 @@ class PoseResNet_heatmap(nn.Module):
 
 		heatmap_1 = self.deconv_layer1_(temp_x) # -> 256x16x16 # change all down
 		heatmap_2 = self.deconv_layer2_(heatmap_1+x_2) # -> 128x32x32
-		heatmap_3 = self.deconv_layer3_(heatmap_2+x_1) # -> 64x64x64
+		heatmap_3 = self.deconv_layer3_(heatmap_2) # -> 64x64x64
 	
 		heatmap_4 = self.final_layer(heatmap_3) # -> 15x64x64
 
@@ -398,13 +461,15 @@ def get_pose_net(model_n=None, cfg=cfg,  **kwargs):
 	num_layers = cfg.MODEL.EXTRA.NUM_LAYERS
 	# style = cfg.MODEL.STYLE
 	
-	block_class, layers = resnet_spec[34]
+
 
 	# if style == 'caffe':
 	#     block_class = Bottleneck_CAFFE
 	if model_n == 'heatmap':
+		block_class, layers = resnet_spec[34]
 		model = PoseResNet_heatmap(block_class, layers, cfg, **kwargs)
 	elif model_n == 'depth':
+		block_class, layers = resnet_spec[34]
 		model = PoseResNet_depth(block_class, layers, cfg, **kwargs)
 	# if is_train and cfg.MODEL.INIT_WEIGHTS:
 	# 	model.init_weights(cfg.MODEL.PRETRAINED)
@@ -426,11 +491,14 @@ class Regressor(nn.Module):
 			self.bilinear_layer_pose.append(block)
 
 
-		self.fc1 = nn.Linear(heatmapfeat_c + depthmapfeat_c, 1024)
+		self.fc1 = nn.Linear(heatmapfeat_c + depthmapfeat_c + 128, 1024)
 		self.bn1 = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
 		self.relu1 = nn.ReLU()
 		self.drop1 = nn.Dropout()
 
+		self.conv_block0 = self._make_block(1,32)
+		self.conv_block1 = self._make_block(32,64) 
+		self.conv_block2 = self._make_block(64,128) 
 
 		self.decjoint = nn.Linear(1024, njoint)
 		self.deccam_trans = nn.Linear(1024, 3)
@@ -440,6 +508,18 @@ class Regressor(nn.Module):
 		nn.init.xavier_uniform_(self.deccam_trans.weight, gain=0.01)
 		nn.init.xavier_uniform_(self.deccam_rot.weight, gain=0.01)
 
+	def _make_block(self,in_channels, out_channels, kernel_size=4, stride=2, padding=1):
+		return nn.Sequential(
+			nn.Conv2d(in_channels=in_channels,
+					  out_channels=out_channels,
+					  kernel_size=kernel_size,
+					  stride=stride,
+					  padding=padding),
+			nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM),
+			nn.ReLU(inplace=True),
+			nn.Dropout(p=0.2),
+		)
+	
 	def _make_bilinear(self,in_dim):
 		return nn.Sequential(
 			nn.Linear(in_dim, 1024),
@@ -453,9 +533,11 @@ class Regressor(nn.Module):
 		)
 
 		
-	def forward(self, heatmap_embed, depthmap_embed):
+	def forward(self, heatmap_embed, depthmap_embed, depthmap):
 		x=heatmap_embed # 512x8x8
 		x2=depthmap_embed # 512x8x8
+		x3=depthmap # 1x256x256
+		# x4=heatmap # 15x64x64
 		# TODO : heatmap 입력 argmax로 차원당 1 하나씩
 		batch_size = x.shape[0]
 
@@ -463,11 +545,27 @@ class Regressor(nn.Module):
 
 		x2 = self.avgpool(x2) # 512
 
-		heatmap_feat = x.squeeze()
-		depth_feat = x2.squeeze()
+		x3 = self.conv_block0(x3) #
+		x3 = self.conv_block1(x3) #
+		x3 = self.conv_block2(x3) # -> 128
+		x3 = self.avgpool(x3) 
+		
+		# max_values, max_indices = torch.max(x4.view(x4.size(0), 15, -1), dim=2)
 
+		# # 1D 인덱스를 2D (x, y) 좌표로 변환합니다.
+		# y_coords = max_indices // 64
+		# x_coords = max_indices % 64
 
-		total_feat = torch.cat([heatmap_feat, depth_feat], 1)
+		# # 결과를 (배치 크기, 15, 2) 크기의 텐서로 반환합니다.
+		# joint_coords = torch.stack((x_coords, y_coords), dim=2)
+		# joint_coords = self.flatten(joint_coords)
+
+		heatmap_feat = x.view(batch_size,-1)
+		depth_feat = x2.view(batch_size,-1)
+		depthmap_feat = x3.view(batch_size,-1) 
+		# joint_coords = joint_coords.view(batch_size,-1)
+
+		total_feat = torch.cat([heatmap_feat, depth_feat, depthmap_feat], 1)
 
 		pred_joint = self.fc1(total_feat)
 		pred_joint = self.bn1(pred_joint)
@@ -671,3 +769,7 @@ class FisheyeDistortion(nn.Module):
 		x_distorted = x_distorted / 2 + 0.5
 
 		return x_distorted
+	
+class CustomActivation(nn.Module):
+    def forward(self, x):
+        return torch.clamp(x, 0, 1)

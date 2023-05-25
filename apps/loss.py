@@ -184,7 +184,7 @@ class heatmap_proj_loss(nn.Module):
 class silhouette_loss(nn.Module):
     def __init__(self) -> None:
         nn.Module.__init__(self)
-        self.loss=nn.MSELoss()
+        self.loss=nn.BCEWithLogitsLoss()
     
     def forward(self,x,label):
         res=None

@@ -21,7 +21,7 @@ from torchvision import transforms
 class Mocap(BaseDataset):
 	"""Mocap Dataset loader"""
 
-	ROOT_DIRS = ['rgba','depth','json']
+	ROOT_DIRS = ['rgba','depth','json','objectId']
 	CM_TO_M = 100
 
 	def index_db(self):
@@ -172,6 +172,29 @@ class Mocap(BaseDataset):
 		rot = torch.tensor(data['camera']['rot']) * np.pi / 180.0
 		return trans, rot
 
+	def _get_silhouette(self,img_path,resize=(256,256)):
+		img = cv2.imread(img_path,cv2.IMREAD_COLOR)
+		img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+		silhouette = np.zeros_like(img[:,:,0])
+	
+		not_black = np.any(img != [0, 0, 0], axis=-1)
+
+		silhouette[not_black] = 255
+
+		# h,w,c = img.shape
+		# c_h,c_w = h//2,w//2
+		# radius = min(c_h,c_w) + 100
+		# mask = np.zeros_like(img)
+		# cv2.circle(mask, (c_w,c_h), radius, (255, 255, 255), -1)
+		# cropped_img = cv2.bitwise_and(img, mask)
+		transform = transforms.Compose([
+			transforms.ToPILImage(),
+			transforms.Resize(resize, Image.BILINEAR),
+			transforms.ToTensor(),
+		])
+		return transform(silhouette)
+
 	def __getitem__(self, index):
 
 		# load image
@@ -186,6 +209,8 @@ class Mocap(BaseDataset):
 
 		depth_path = self.index['depth'][index].decode('utf8')
 
+		obj_path = self.index['objectId'][index].decode('utf8')
+
 		# get action name
 		action = data['action']
 		img = self._get_image(img_path)
@@ -194,6 +219,7 @@ class Mocap(BaseDataset):
 		depth = self._get_depth(depth_path)
 		heatmap = self._get_heatmap(p2d_)
 		cam = self._get_cam(data)
+		silhouette = self._get_silhouette(obj_path)
 
 		return {
 			'info' : img_path,
@@ -204,6 +230,7 @@ class Mocap(BaseDataset):
 			'depth' : depth,
 			'heatmap' : heatmap, 
 			'action' : action,
+			'silhouette' : silhouette,
 		}
 
 	def __len__(self):
