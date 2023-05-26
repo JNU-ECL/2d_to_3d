@@ -46,7 +46,7 @@ use_cuda = torch.cuda.is_available()
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str ='/workspace/2d_to_3d/apps/exp528/best.pth', load_heatmap=True, load_depthmap=True, load_regressor=True):
+	def __init__(self,pretrained_path:str =None, load_heatmap=True, load_depthmap=True, load_regressor=True):
 		super().__init__()
 		load_heatmap=load_heatmap
 		load_depthmap=load_depthmap
@@ -85,21 +85,36 @@ class TempModel(nn.Module):
 								depthmap_state_dict[new_key] = v
 						self.depthmap_module.load_state_dict(depthmap_state_dict)
 				
-	def forward(self, x):
+	def forward(self, x,epoch,is_train):
 		res = {}
 		image_ = x['image']
+	
 		
 		heatmap_feat=self.heatmap_module(image_)
 		depth_feat=self.depthmap_module(image_)
-
-		regressor_res_dict=self.regressor(
+		if is_train:
+			depth_ = x['depth']
+			heatmap_ = x['heatmap']
+			regressor_res_dict=self.regressor(
+				# heatmap_feat['embed_feature'],
+				# heatmap_,
+				# depth_feat['embed_feature'],
+				# depth_,
+				heatmap_feat['embed_feature'],
+				heatmap_feat['heatmap'].detach(),
+				depth_feat['embed_feature'],
+				depth_feat['depthmap'],
+			)
+		else:
+		
+			regressor_res_dict=self.regressor(
 			heatmap_feat['embed_feature'],
-			# heatmap_feat['heatmap'],
+			heatmap_feat['heatmap'],
 			depth_feat['embed_feature'],
 			depth_feat['depthmap'],
-		)
+			)
 
-	
+
 
 		res.update({
    	  		'regressor_dict' : regressor_res_dict,
@@ -226,7 +241,30 @@ class Bottleneck(nn.Module):
 		out = self.relu(out)
 
 		return out
-	
+
+class WASP(nn.Module):
+    def __init__(self, in_channels, out_channels, rates):
+        super(WASP, self).__init__()
+
+        self.conv_layers = nn.ModuleList()
+        for i in range(len(rates)):
+            self.conv_layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=3, dilation=rates[i], padding=rates[i]))
+            self.conv_layers.append(nn.Conv2d(out_channels, out_channels, kernel_size=1))
+            self.conv_layers.append(nn.Conv2d(out_channels, out_channels, kernel_size=1))
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+
+    def forward(self, x):
+        output = []
+        for i in range(0, len(self.conv_layers), 3):
+            temp = self.conv_layers[i](x)
+            temp = self.conv_layers[i+1](temp)
+            temp = self.conv_layers[i+2](temp)
+            output.append(temp)
+        output.append(self.avg_pool(x))
+
+        return torch.cat(output, dim=1)
+
 class PoseResNet_depth(nn.Module):
 
 	def __init__(self, block, layers, cfg, **kwargs):
@@ -337,7 +375,7 @@ class PoseResNet_depth(nn.Module):
 		x_1 = self.layer2(x_0) # -> 128x32x32
 		x_2 = self.layer3(x_1) # -> 256x16x16
 		temp_x = self.layer4(x_2) # -> 512x8x8
-
+		
 		depthmap = self.deconv_layer1(temp_x) # -> 256x16x16
 		depthmap = self.deconv_layer2(depthmap+x_2) # -> 128x32x32
 		depthmap_ = self.deconv_layer3(depthmap+x_1) # -> 64x64x64
@@ -491,7 +529,7 @@ class Regressor(nn.Module):
 			self.bilinear_layer_pose.append(block)
 
 
-		self.fc1 = nn.Linear(heatmapfeat_c + depthmapfeat_c + 128, 1024)
+		self.fc1 = nn.Linear(heatmapfeat_c + depthmapfeat_c + 128*2, 1024)
 		self.bn1 = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
 		self.relu1 = nn.ReLU()
 		self.drop1 = nn.Dropout()
@@ -499,6 +537,9 @@ class Regressor(nn.Module):
 		self.conv_block0 = self._make_block(1,32)
 		self.conv_block1 = self._make_block(32,64) 
 		self.conv_block2 = self._make_block(64,128) 
+
+		self.conv_block1_ = self._make_block(15,64) 
+		self.conv_block2_ = self._make_block(64,128) 
 
 		self.decjoint = nn.Linear(1024, njoint)
 		self.deccam_trans = nn.Linear(1024, 3)
@@ -533,11 +574,11 @@ class Regressor(nn.Module):
 		)
 
 		
-	def forward(self, heatmap_embed, depthmap_embed, depthmap):
+	def forward(self, heatmap_embed, heatmap, depthmap_embed, depthmap):
 		x=heatmap_embed # 512x8x8
 		x2=depthmap_embed # 512x8x8
 		x3=depthmap # 1x256x256
-		# x4=heatmap # 15x64x64
+		x4=heatmap # 15x64x64
 		# TODO : heatmap 입력 argmax로 차원당 1 하나씩
 		batch_size = x.shape[0]
 
@@ -550,6 +591,10 @@ class Regressor(nn.Module):
 		x3 = self.conv_block2(x3) # -> 128
 		x3 = self.avgpool(x3) 
 		
+
+		x4 = self.conv_block1_(x4) #
+		x4 = self.conv_block2_(x4) # -> 128
+		x4 = self.avgpool(x4)
 		# max_values, max_indices = torch.max(x4.view(x4.size(0), 15, -1), dim=2)
 
 		# # 1D 인덱스를 2D (x, y) 좌표로 변환합니다.
@@ -557,15 +602,15 @@ class Regressor(nn.Module):
 		# x_coords = max_indices % 64
 
 		# # 결과를 (배치 크기, 15, 2) 크기의 텐서로 반환합니다.
-		# joint_coords = torch.stack((x_coords, y_coords), dim=2)
+		# joint_coords = torch.stack((x_coords, y_coords), dim=2) / 10
 		# joint_coords = self.flatten(joint_coords)
 
-		heatmap_feat = x.view(batch_size,-1)
+		heatmap_e_feat = x.view(batch_size,-1)
 		depth_feat = x2.view(batch_size,-1)
 		depthmap_feat = x3.view(batch_size,-1) 
-		# joint_coords = joint_coords.view(batch_size,-1)
+		heatmap_feat = x4.view(batch_size,-1)
 
-		total_feat = torch.cat([heatmap_feat, depth_feat, depthmap_feat], 1)
+		total_feat = torch.cat([heatmap_e_feat, heatmap_feat, depth_feat, depthmap_feat], 1)
 
 		pred_joint = self.fc1(total_feat)
 		pred_joint = self.bn1(pred_joint)
