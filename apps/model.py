@@ -77,8 +77,9 @@ class TempModel(nn.Module):
 		image_ = x['image']
 	
 		
-		heatmap_feat=self.heatmap_module(image_)
 		depth_feat=self.depthmap_module(image_)
+		heatmap_feat=self.heatmap_module(image_)
+
 		if is_train:
 			depth_ = x['depth']
 			heatmap_ = x['heatmap']
@@ -189,6 +190,47 @@ class BasicBlock(nn.Module):
 		return out
 
 
+
+class Bottleneck(nn.Module):
+    expansion = 4
+
+    def __init__(self, inplanes, planes, stride=1, dilation=1, downsample=None, BatchNorm=None):
+        super(Bottleneck, self).__init__()
+        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
+        self.bn1 = BatchNorm(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
+                               dilation=dilation, padding=dilation, bias=False)
+        self.bn2 = BatchNorm(planes)
+        self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
+        self.bn3 = BatchNorm(planes * 4)
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
+        self.dilation = dilation
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = self.relu(out)
+
+        return out
+
+"""
 class Bottleneck(nn.Module):
 	expansion = 4
 
@@ -228,11 +270,11 @@ class Bottleneck(nn.Module):
 		out = self.relu(out)
 
 		return out
-
+"""
 class Decoder(nn.Module):
 	def __init__(self, outplanes, resnet):
 		super(Decoder, self).__init__()
-		low_level_inplanes = 64
+		low_level_inplanes = 256
 		self.resnet = resnet
 
 		self.conv1 = nn.Conv2d(low_level_inplanes, 48, 1, bias=False)
@@ -260,8 +302,6 @@ class Decoder(nn.Module):
 									nn.BatchNorm2d(32),
 									nn.ReLU(),
 									nn.Dropout(0.1),
-									nn.ConvTranspose2d(32, outplanes, kernel_size=4, stride=2, padding=1),
-									nn.Sigmoid(),
 									)
 
 
@@ -329,8 +369,14 @@ class _AtrousModule(nn.Module):
 class WASP(nn.Module):
 	def __init__(self):
 		super(WASP, self).__init__()
-		inplanes = 512
-		dilations = [4, 3, 2, 1]
+		self.output_stride = 16
+		inplanes = 2048 #resnet34:512, resnet50:2048
+		if self.output_stride == 16:
+			#dilations = [ 6, 12, 18, 24]
+			dilations = [24, 18, 12,  6]
+			#dilations = [6, 6, 6, 6]
+		elif self.output_stride == 8:
+			dilations = [48, 36, 24, 12]
 
 
 		self.aspp1 = _AtrousModule(inplanes, 256, 1, padding=0, dilation=dilations[0])
@@ -381,9 +427,9 @@ class WASP(nn.Module):
 
 		x5 = self.global_avg_pool(x)
 		x5 = F.interpolate(x5, size=x4.size()[2:], mode='bilinear', align_corners=True)
-		x = torch.cat((x1, x2, x3, x4, x5), dim=1)
+		x = torch.cat((x1, x2, x3, x4, x5), dim=1) # -> [10, 1280, 16, 16]
 
-		x = self.conv1(x)
+		x = self.conv1(x) # -> [10, 256, 16, 16]
 		x = self.bn1(x)
 		x = self.relu(x)
 
@@ -394,26 +440,48 @@ class PoseResNet_depth(nn.Module):
 	def __init__(self, block, layers, cfg, **kwargs):
 		super(PoseResNet_depth, self).__init__()
 		self.inplanes = 64
-
+		self.output_stride =16
+		self.pretrained = True
+		BatchNorm = nn.BatchNorm2d
 		extra = cfg.MODEL.EXTRA
 		self.deconv_with_bias = extra.DECONV_WITH_BIAS
 
 		self.wasp = WASP()
 		self.decoder = Decoder(1,'depth')
-		self.decoder_ = Decoder(1,'depth')
+
+		blocks = [1, 2, 4]
+		if self.output_stride == 16:
+			#strides = [1, 1, 1, 1]
+			strides = [1, 2, 2, 1]
+			dilations = [1, 1, 1, 2]
+		elif self.output_stride == 8:
+			strides = [1, 2, 1, 1]
+			dilations = [1, 1, 2, 4]
+		else:
+			raise NotImplementedError
+
 		self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
 							   bias=False)
 		self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
 		self.relu = nn.ReLU(inplace=True)
 		self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-		self.layer1 = self._make_layer(block, 64, layers[0])
-		self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-		self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-		self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+
+		self.layer1 = self._make_layer(block, 64, layers[0], stride=strides[0], dilation=dilations[0], BatchNorm=BatchNorm)
+		self.layer2 = self._make_layer(block, 128, layers[1], stride=strides[1], dilation=dilations[1], BatchNorm=BatchNorm)
+		self.layer3 = self._make_layer(block, 256, layers[2], stride=strides[2], dilation=dilations[2], BatchNorm=BatchNorm)
+		self.layer4 = self._make_MG_unit(block, 512, blocks=blocks, stride=strides[3], dilation=dilations[3], BatchNorm=BatchNorm)
 
 
 
-		
+		self.deconv_depth = nn.Sequential(
+			nn.ConvTranspose2d(32, 1, kernel_size=4, stride=2, padding=1),
+			nn.Sigmoid(),
+		)
+
+		self.deconv_sil = nn.Sequential(
+			nn.ConvTranspose2d(32, 1, kernel_size=4, stride=2, padding=1),
+			nn.Sigmoid(),
+		)
 		# self.deconv_layer1 = self._make_deconv_layer(512,256)
 		# self.deconv_layer2 = self._make_deconv_layer(256,128)
 		# self.deconv_layer3 = self._make_deconv_layer(128,64)
@@ -433,6 +501,8 @@ class PoseResNet_depth(nn.Module):
 
 		
 		self._init_weight()
+		if self.pretrained:
+			self._load_pretrained_model()
 
 	def _load_pretrained_model(self):
 		#pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth')
@@ -475,23 +545,56 @@ class PoseResNet_depth(nn.Module):
 			nn.Dropout(0.1),
 			)
 	
-	def _make_layer(self, block, planes, blocks, stride=1):
+	def _make_layer(self, block, planes, blocks, stride=1, dilation=1, BatchNorm=None):
 		downsample = None
 		if stride != 1 or self.inplanes != planes * block.expansion:
 			downsample = nn.Sequential(
 				nn.Conv2d(self.inplanes, planes * block.expansion,
-						  kernel_size=1, stride=stride, bias=False),
-				nn.BatchNorm2d(planes * block.expansion, momentum=BN_MOMENTUM),
+							kernel_size=1, stride=stride, bias=False),
+				BatchNorm(planes * block.expansion),
 			)
 
 		layers = []
-		layers.append(block(self.inplanes, planes, stride, downsample))
+		layers.append(block(self.inplanes, planes, stride, dilation, downsample, BatchNorm))
 		self.inplanes = planes * block.expansion
 		for i in range(1, blocks):
-			layers.append(block(self.inplanes, planes))
+			layers.append(block(self.inplanes, planes, dilation=dilation, BatchNorm=BatchNorm))
 
 		return nn.Sequential(*layers)
 
+	def _make_MG_unit(self, block, planes, blocks, stride=1, dilation=1, BatchNorm=None):
+		downsample = None
+		if stride != 1 or self.inplanes != planes * block.expansion:
+			downsample = nn.Sequential(
+				nn.Conv2d(self.inplanes, planes * block.expansion,
+							kernel_size=1, stride=stride, bias=False),
+				BatchNorm(planes * block.expansion),
+			)
+
+		layers = []
+		layers.append(block(self.inplanes, planes, stride, dilation=blocks[0]*dilation,
+							downsample=downsample, BatchNorm=BatchNorm))
+		self.inplanes = planes * block.expansion
+		for i in range(1, len(blocks)):
+			layers.append(block(self.inplanes, planes, stride=1,
+								dilation=blocks[i]*dilation, BatchNorm=BatchNorm))
+
+		return nn.Sequential(*layers)
+
+	
+	def _load_pretrained_model(self):
+		#pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth')
+		#pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet34-333f7ec4.pth')
+		pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet50-19c8e357.pth')
+		# pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet101-5d3b4d8f.pth')
+		
+		model_dict = {}
+		state_dict = self.state_dict()
+		for k, v in pretrain_dict.items():
+			if k in state_dict:
+				model_dict[k] = v
+		state_dict.update(model_dict)
+		self.load_state_dict(state_dict)
 
 	def forward(self, x): # -> 3x256x256
 		x = self.conv1(x) # -> 64x128x128
@@ -499,12 +602,12 @@ class PoseResNet_depth(nn.Module):
 		x = self.relu(x)
 		x = self.maxpool(x) # -> 64x64x64
 
-		low_level_feat = self.layer1(x) # -> 64x64x64
-		x_1 = self.layer2(low_level_feat) # -> 128x32x32
-		x_2 = self.layer3(x_1) # -> 256x16x16
-		x = self.layer4(x_2) # -> 512x8x8
+		low_level_feat = self.layer1(x) # ->256x64x64
+		x_1 = self.layer2(low_level_feat) # ->512x32x32
+		x_2 = self.layer3(x_1) # ->1024x16x16
+		x = self.layer4(x_2) # ->2048x16x16
 
-		temp_x = self.wasp(x) # -> 256x8x8
+		temp_x = self.wasp(x) # -> 256x16x16
 		"""
 		x_= self.deconv_layer1(x_) #->128x16x16
 		x_= self.deconv_layer2(x_) #->64x32x32
@@ -513,9 +616,9 @@ class PoseResNet_depth(nn.Module):
 		x_= self.deconv_layer5(x_) # 32+64= 96x64x64->
 		"""
 	 	# TODO : change interpolate to deconv only dep,silhouette
-		x_depthmap = self.decoder_(temp_x,low_level_feat)
-		x_silhouette = self.decoder(temp_x,low_level_feat)
-			
+		x_ = self.decoder(temp_x,low_level_feat)
+		x_depthmap = self.deconv_depth(x_)
+		x_silhouette  = self.deconv_sil(x_)
 		# final bilinear interpolation to reach the original input size
 		depthmap = F.interpolate(x_depthmap, size=(256,256), mode='bilinear', align_corners=True)
 		silhouette = F.interpolate(x_silhouette, size=(256,256), mode='bilinear', align_corners=True)
@@ -535,6 +638,21 @@ class PoseResNet_heatmap(nn.Module):
 		super(PoseResNet_heatmap, self).__init__()
 		self.inplanes = 64
 
+		self.output_stride =16
+		self.pretrained = True
+		BatchNorm = nn.BatchNorm2d
+		blocks = [1, 2, 4]
+		if self.output_stride == 16:
+			#strides = [1, 1, 1, 1]
+			strides = [1, 2, 2, 1]
+			dilations = [1, 1, 1, 2]
+		elif self.output_stride == 8:
+			strides = [1, 2, 1, 1]
+			dilations = [1, 1, 2, 4]
+		else:
+			raise NotImplementedError
+
+
 		extra = cfg.MODEL.EXTRA
 		self.deconv_with_bias = extra.DECONV_WITH_BIAS
 
@@ -545,10 +663,13 @@ class PoseResNet_heatmap(nn.Module):
 		self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
 		self.relu = nn.ReLU(inplace=True)
 		self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-		self.layer1 = self._make_layer(block, 64, layers[0])
-		self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-		self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-		self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+
+
+		self.layer1 = self._make_layer(block, 64, layers[0], stride=strides[0], dilation=dilations[0], BatchNorm=BatchNorm)
+		self.layer2 = self._make_layer(block, 128, layers[1], stride=strides[1], dilation=dilations[1], BatchNorm=BatchNorm)
+		self.layer3 = self._make_layer(block, 256, layers[2], stride=strides[2], dilation=dilations[2], BatchNorm=BatchNorm)
+		self.layer4 = self._make_MG_unit(block, 512, blocks=blocks, stride=strides[3], dilation=dilations[3], BatchNorm=BatchNorm)
+
 
 
 
@@ -584,11 +705,15 @@ class PoseResNet_heatmap(nn.Module):
 			)
 		"""
 		self._init_weight()
+		if self.pretrained:
+			self._load_pretrained_model()
+
+
 
 	def _load_pretrained_model(self):
 		#pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth')
-		pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet34-333f7ec4.pth')
-		# pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet50-19c8e357.pth')
+		# pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet34-333f7ec4.pth')
+		pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet50-19c8e357.pth')
 		# pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet101-5d3b4d8f.pth')
 		
 		model_dict = {}
@@ -625,20 +750,39 @@ class PoseResNet_heatmap(nn.Module):
 			nn.ReLU(inplace=True),
 			)
 	
-	def _make_layer(self, block, planes, blocks, stride=1):
+	def _make_layer(self, block, planes, blocks, stride=1, dilation=1, BatchNorm=None):
 		downsample = None
 		if stride != 1 or self.inplanes != planes * block.expansion:
 			downsample = nn.Sequential(
 				nn.Conv2d(self.inplanes, planes * block.expansion,
-						  kernel_size=1, stride=stride, bias=False),
-				nn.BatchNorm2d(planes * block.expansion, momentum=BN_MOMENTUM),
+							kernel_size=1, stride=stride, bias=False),
+				BatchNorm(planes * block.expansion),
 			)
 
 		layers = []
-		layers.append(block(self.inplanes, planes, stride, downsample))
+		layers.append(block(self.inplanes, planes, stride, dilation, downsample, BatchNorm))
 		self.inplanes = planes * block.expansion
 		for i in range(1, blocks):
-			layers.append(block(self.inplanes, planes))
+			layers.append(block(self.inplanes, planes, dilation=dilation, BatchNorm=BatchNorm))
+
+		return nn.Sequential(*layers)
+
+	def _make_MG_unit(self, block, planes, blocks, stride=1, dilation=1, BatchNorm=None):
+		downsample = None
+		if stride != 1 or self.inplanes != planes * block.expansion:
+			downsample = nn.Sequential(
+				nn.Conv2d(self.inplanes, planes * block.expansion,
+							kernel_size=1, stride=stride, bias=False),
+				BatchNorm(planes * block.expansion),
+			)
+
+		layers = []
+		layers.append(block(self.inplanes, planes, stride, dilation=blocks[0]*dilation,
+							downsample=downsample, BatchNorm=BatchNorm))
+		self.inplanes = planes * block.expansion
+		for i in range(1, len(blocks)):
+			layers.append(block(self.inplanes, planes, stride=1,
+								dilation=blocks[i]*dilation, BatchNorm=BatchNorm))
 
 		return nn.Sequential(*layers)
 
@@ -677,10 +821,10 @@ def get_pose_net(model_n=None, cfg=cfg,  **kwargs):
 	# if style == 'caffe':
 	#     block_class = Bottleneck_CAFFE
 	if model_n == 'heatmap':
-		block_class, layers = resnet_spec[34]
+		block_class, layers = resnet_spec[50]
 		model = PoseResNet_heatmap(block_class, layers, cfg, **kwargs)
 	elif model_n == 'depth':
-		block_class, layers = resnet_spec[34]
+		block_class, layers = resnet_spec[50]
 		model = PoseResNet_depth(block_class, layers, cfg, **kwargs)
 	# if is_train and cfg.MODEL.INIT_WEIGHTS:
 	# 	model.init_weights(cfg.MODEL.PRETRAINED)
