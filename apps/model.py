@@ -230,14 +230,15 @@ class Bottleneck(nn.Module):
 		return out
 
 class Decoder(nn.Module):
-	def __init__(self, outplanes):
+	def __init__(self, outplanes, resnet):
 		super(Decoder, self).__init__()
 		low_level_inplanes = 64
-
+		self.resnet = resnet
 
 		self.conv1 = nn.Conv2d(low_level_inplanes, 48, 1, bias=False)
 		self.bn1 = nn.BatchNorm2d(48)
 		self.relu = nn.ReLU()
+		self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 		# self.conv2 = nn.Conv2d(2048, 256, 1, bias=False)
 		# self.bn2 = BatchNorm(256)
 		self.last_conv = nn.Sequential(nn.Conv2d(304, 256, kernel_size=3, stride=1, padding=1, bias=False),
@@ -251,8 +252,18 @@ class Decoder(nn.Module):
 										nn.Conv2d(256, outplanes, kernel_size=1, stride=1),
 										nn.Sigmoid(),
 										)
+		self.last_deconv = nn.Sequential(nn.ConvTranspose2d(304, 128, kernel_size=4, stride=2, padding=1),
+									nn.BatchNorm2d(128),
+									nn.ReLU(),
+									nn.Dropout(0.5),
+									nn.ConvTranspose2d(128, 32, kernel_size=4, stride=2, padding=1),
+									nn.BatchNorm2d(32),
+									nn.ReLU(),
+									nn.Dropout(0.1),
+									nn.ConvTranspose2d(32, outplanes, kernel_size=4, stride=2, padding=1),
+									nn.Sigmoid(),
+									)
 
-		self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
 		self._init_weight()
 
@@ -267,7 +278,12 @@ class Decoder(nn.Module):
 		x = F.interpolate(x, size=low_level_feat.size()[2:], mode='bilinear', align_corners=True)
 		# TODO : check ouyput size
 		x = torch.cat((x, low_level_feat), dim=1) 
-		x = self.last_conv(x)
+		if self.resnet == 'depth':
+			x = self.last_deconv(x)
+		elif self.resnet == 'heatmap':
+			x = self.last_conv(x)
+		else:
+			raise NotImplementedError
 
 
 		return x
@@ -276,9 +292,12 @@ class Decoder(nn.Module):
 		for m in self.modules():
 			if isinstance(m, nn.Conv2d):
 				torch.nn.init.kaiming_normal_(m.weight)
+			elif isinstance(m, nn.ConvTranspose2d):
+				torch.nn.init.kaiming_normal_(m.weight)
 			elif isinstance(m, nn.BatchNorm2d):
 				m.weight.data.fill_(1)
 				m.bias.data.zero_()
+			
 
 class _AtrousModule(nn.Module):
     def __init__(self, inplanes, planes, kernel_size, padding, dilation):
@@ -380,8 +399,8 @@ class PoseResNet_depth(nn.Module):
 		self.deconv_with_bias = extra.DECONV_WITH_BIAS
 
 		self.wasp = WASP()
-		self.decoder = Decoder(1)
-		self.decoder_ = Decoder(1)
+		self.decoder = Decoder(1,'depth')
+		self.decoder_ = Decoder(1,'depth')
 		self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
 							   bias=False)
 		self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
@@ -394,37 +413,25 @@ class PoseResNet_depth(nn.Module):
 
 
 
-		"""
-		self.deconv_layer1 = self._make_deconv_layer(512,256)
-		self.deconv_layer2 = self._make_deconv_layer(256,128)
-		self.deconv_layer3 = self._make_deconv_layer(128,64)
-		self.deconv_layer4 = self._make_deconv_layer(64,32)
-		self.deconv_layer4_ = self._make_deconv_layer(64,32)
-		self.deconv_layer5 = nn.Sequential(
-			nn.ConvTranspose2d(
-				in_channels=32,
-				out_channels=1,
-				kernel_size=4,
-				stride=2,
-				padding=1,
-				bias=self.deconv_with_bias
-							   ),
-			nn.BatchNorm2d(1, momentum=BN_MOMENTUM),
-			nn.Sigmoid(),
-			)
-		self.deconv_layer5_ = nn.Sequential(
-			nn.ConvTranspose2d(
-				in_channels=32,
-				out_channels=1,
-				kernel_size=4,
-				stride=2,
-				padding=1,
-				bias=self.deconv_with_bias
-							   ),
-			nn.BatchNorm2d(1, momentum=BN_MOMENTUM),
-			nn.ReLU(inplace=True),
-			)
-		"""
+		
+		# self.deconv_layer1 = self._make_deconv_layer(512,256)
+		# self.deconv_layer2 = self._make_deconv_layer(256,128)
+		# self.deconv_layer3 = self._make_deconv_layer(128,64)
+		# self.deconv_layer4 = self._make_deconv_layer(64,32)
+		# self.deconv_layer5 = nn.Sequential(
+		# 	nn.ConvTranspose2d(
+		# 		in_channels=32,
+		# 		out_channels=1,
+		# 		kernel_size=4,
+		# 		stride=2,
+		# 		padding=1,
+		# 		bias=self.deconv_with_bias
+		# 					   ),
+		# 	nn.BatchNorm2d(1, momentum=BN_MOMENTUM),
+		# 	nn.Sigmoid(),
+		# 	)
+
+		
 		self._init_weight()
 
 	def _load_pretrained_model(self):
@@ -465,6 +472,7 @@ class PoseResNet_depth(nn.Module):
 							   ),
 			nn.BatchNorm2d(out_planes, momentum=BN_MOMENTUM),
 			nn.ReLU(inplace=True),
+			nn.Dropout(0.1),
 			)
 	
 	def _make_layer(self, block, planes, blocks, stride=1):
@@ -496,8 +504,15 @@ class PoseResNet_depth(nn.Module):
 		x_2 = self.layer3(x_1) # -> 256x16x16
 		x = self.layer4(x_2) # -> 512x8x8
 
-		temp_x = self.wasp(x) 
-
+		temp_x = self.wasp(x) # -> 256x8x8
+		"""
+		x_= self.deconv_layer1(x_) #->128x16x16
+		x_= self.deconv_layer2(x_) #->64x32x32
+		x_= self.deconv_layer3(x_) #->32x64x64
+		x_= self.deconv_layer4(x_+low_level_feat) #->32x64x64
+		x_= self.deconv_layer5(x_) # 32+64= 96x64x64->
+		"""
+	 	# TODO : change interpolate to deconv only dep,silhouette
 		x_depthmap = self.decoder_(temp_x,low_level_feat)
 		x_silhouette = self.decoder(temp_x,low_level_feat)
 			
@@ -524,7 +539,7 @@ class PoseResNet_heatmap(nn.Module):
 		self.deconv_with_bias = extra.DECONV_WITH_BIAS
 
 		self.wasp = WASP()
-		self.decoder = Decoder(15)
+		self.decoder = Decoder(15,'heatmap')
 		self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
 							   bias=False)
 		self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
@@ -687,7 +702,7 @@ class Regressor(nn.Module):
 			self.bilinear_layer_pose.append(block)
 
 
-		self.fc1 = nn.Linear(heatmapfeat_c + depthmapfeat_c + 128*2, 1024)
+		self.fc1 = nn.Linear(heatmapfeat_c + depthmapfeat_c + 128, 1024)
 		self.bn1 = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
 		self.relu1 = nn.ReLU()
 		self.drop1 = nn.Dropout()
@@ -736,7 +751,7 @@ class Regressor(nn.Module):
 		x=heatmap_embed # 256x8x8
 		x2=depthmap_embed # 256x8x8
 		x3=depthmap # 1x256x256
-		x4=heatmap # 15x64x64
+		# x4=heatmap # 15x64x64
 		# TODO : heatmap 입력 argmax로 차원당 1 하나씩
 		batch_size = x.shape[0]
 
@@ -750,9 +765,9 @@ class Regressor(nn.Module):
 		x3 = self.avgpool(x3) 
 		
 
-		x4 = self.conv_block1_(x4) #
-		x4 = self.conv_block2_(x4) # -> 128
-		x4 = self.avgpool(x4)
+		# x4 = self.conv_block1_(x4) #
+		# x4 = self.conv_block2_(x4) # -> 128
+		# x4 = self.avgpool(x4)
 		# max_values, max_indices = torch.max(x4.view(x4.size(0), 15, -1), dim=2)
 
 		# # 1D 인덱스를 2D (x, y) 좌표로 변환합니다.
@@ -766,9 +781,9 @@ class Regressor(nn.Module):
 		heatmap_e_feat = x.view(batch_size,-1)
 		depth_feat = x2.view(batch_size,-1)
 		depthmap_feat = x3.view(batch_size,-1) 
-		heatmap_feat = x4.view(batch_size,-1)
+		# heatmap_feat = x4.view(batch_size,-1)
 
-		total_feat = torch.cat([heatmap_e_feat, heatmap_feat, depth_feat, depthmap_feat], 1)
+		total_feat = torch.cat([heatmap_e_feat, depth_feat, depthmap_feat], 1)
 
 		pred_joint = self.fc1(total_feat)
 		pred_joint = self.bn1(pred_joint)
