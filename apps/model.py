@@ -33,7 +33,7 @@ import torch.utils.model_zoo as model_zoo
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str =None, load_heatmap=True, load_depthmap=True, load_regressor=True):
+	def __init__(self,pretrained_path:str ='/workspace/2d_to_3d/apps/exp585/9.pth', load_heatmap=True, load_depthmap=True, load_regressor=True):
 		super().__init__()
 		load_heatmap=load_heatmap
 		load_depthmap=load_depthmap
