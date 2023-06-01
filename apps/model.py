@@ -9,7 +9,7 @@
 # from __future__ import division
 # from __future__ import print_function
 
-
+import math
 import logging
 from collections import OrderedDict
 from yacs.config import CfgNode as CN
@@ -23,72 +23,92 @@ from smplx.body_models import SMPL
 import numpy as np
 from collections import OrderedDict
 from geometry import rot6d_to_rotmat, projection_temp, rotation_matrix_to_angle_axis, create_euler
-# TODO : kaolin based renderer 구현할것 
-# import kaolin as kal
+import torch.utils.model_zoo as model_zoo
 
-SMPL_MEAN_PARAMS = '/workspace/2d_to_3d/model/smpl_mean_params.npz'
-SMPL_MODEL_DIR = '/workspace/2d_to_3d/model/smpl'
-use_cuda = torch.cuda.is_available()
+
+
+# SMPL_MEAN_PARAMS = '/workspace/2d_to_3d/model/smpl_mean_params.npz'
+# SMPL_MODEL_DIR = '/workspace/2d_to_3d/model/smpl'
+# use_cuda = torch.cuda.is_available()
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str = None):
+	def __init__(self,pretrained_path:str ='/workspace/2d_to_3d/apps/exp585/9.pth', load_heatmap=True, load_depthmap=True, load_regressor=True):
 		super().__init__()
-		self.feature_model1 = get_pose_net(True)
-		self.regressor2=Regressor2(576,smpl_mean_params=SMPL_MEAN_PARAMS)
+		load_heatmap=load_heatmap
+		load_depthmap=load_depthmap
+		load_regressor=load_regressor
+		self.heatmap_module = get_pose_net('heatmap')
+		self.depthmap_module = get_pose_net('depth')
+		self.regressor=Regressor(depthmapfeat_c=256,heatmapfeat_c=256)
+		
 		if pretrained_path:
 			tempmodel_ckpt = torch.load(pretrained_path)
-			tempmodel_dict = tempmodel_ckpt['model_state_dict']
-			feature_model_dict = OrderedDict()
-			for k,v in tempmodel_dict.items():
-				if k.startswith('feature_model1.'):
-					new_k = k[len('feature_model1.'):]
-					feature_model_dict[new_k] = v
-			self.feature_model1.load_state_dict(feature_model_dict)
-
-			
-
-	def forward(self, x, is_train, epoch):
+			if load_heatmap and load_depthmap and load_regressor:
+				self.load_state_dict(tempmodel_ckpt)
+				if not load_regressor:
+					heatmap_state_dict = OrderedDict()
+					depthmap_state_dict = OrderedDict()
+					if load_heatmap and load_depthmap:
+						for k,v in tempmodel_ckpt.items():
+							if k.startswith('heatmap_module.'):
+								new_key = k[len('heatmap_module.'):]
+								heatmap_state_dict[new_key] = v
+							if k.startswith('depthmap_module.'):
+								new_key = k[len('depthmap_module.'):]
+								depthmap_state_dict[new_key] = v
+						self.heatmap_module.load_state_dict(heatmap_state_dict)
+						self.depthmap_module.load_state_dict(depthmap_state_dict)
+					elif load_heatmap:
+						for k,v in tempmodel_ckpt.items():
+							if k.startswith('heatmap_module.'):
+								new_key = k[len('heatmap_module.'):]
+								heatmap_state_dict[new_key] = v
+						self.heatmap_module.load_state_dict(heatmap_state_dict)
+					else:
+						for k,v in tempmodel_ckpt.items():
+							if k.startswith('depthmap_module.'):
+								new_key = k[len('depthmap_module.'):]
+								depthmap_state_dict[new_key] = v
+						self.depthmap_module.load_state_dict(depthmap_state_dict)
+				
+	def forward(self, x,epoch,is_train):
 		res = {}
 		image_ = x['image']
-		depth_ = x['depth']
-		heatmap_ = x['heatmap']
-		# trans_, rot_ = x['camera_info']
-		
-		feature_dict=self.feature_model1(image_)
 	
-		# regressor1_res_dict=self.regressor1(heatmap) # [10,24,512,512]
+		
+		depth_feat=self.depthmap_module(image_)
+		heatmap_feat=self.heatmap_module(image_)
+
 		if is_train:
-			if epoch==0:
-				regressor2_res_dict=self.regressor2(
-					# feature_dict['heatmap'],
-					# feature_dict['depthmap'],
-					heatmap_,
-					depth_,
-					# trans_,
-					# rot_
-					)
-			else:
-				regressor2_res_dict=self.regressor2(
-					feature_dict['heatmap'].detach(),
-					feature_dict['depthmap'].detach(),
-					# trans_,
-					# rot_
-					)	
+			depth_ = x['depth']
+			heatmap_ = x['heatmap']
+			regressor_res_dict=self.regressor(
+				# heatmap_feat['embed_feature'],
+				# heatmap_,
+				# depth_feat['embed_feature'],
+				# depth_,
+				heatmap_feat['embed_feature'],
+				heatmap_feat['heatmap'],
+				depth_feat['embed_feature'],
+				depth_feat['depthmap'],
+			)
 		else:
-			regressor2_res_dict=self.regressor2(
-				feature_dict['heatmap'].detach(),
-				feature_dict['depthmap'].detach(),
-				# pred_trans,
-				# pred_rot
-				)
+		
+			regressor_res_dict=self.regressor(
+			heatmap_feat['embed_feature'],
+			heatmap_feat['heatmap'],
+			depth_feat['embed_feature'],
+			depth_feat['depthmap'],
+			)
+
+
 
 		res.update({
-   	  		'regressor_dict' : regressor2_res_dict,
-	 		'depth_feature' : feature_dict['depthmap'],
-	 		'heatmap' : feature_dict['heatmap'],
-			# 'pred_cam_trans' : pred_trans,
-			# 'pred_cam_rot' : pred_rot
+   	  		'regressor_dict' : regressor_res_dict,
+	 		'depthmap' : depth_feat['depthmap'],
+			'silhouette' : depth_feat['silhouette'],
+	 		'heatmap' : heatmap_feat['heatmap'],
 		})    
 		return res
 
@@ -170,6 +190,47 @@ class BasicBlock(nn.Module):
 		return out
 
 
+
+class Bottleneck(nn.Module):
+    expansion = 4
+
+    def __init__(self, inplanes, planes, stride=1, dilation=1, downsample=None, BatchNorm=None):
+        super(Bottleneck, self).__init__()
+        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
+        self.bn1 = BatchNorm(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
+                               dilation=dilation, padding=dilation, bias=False)
+        self.bn2 = BatchNorm(planes)
+        self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
+        self.bn3 = BatchNorm(planes * 4)
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
+        self.dilation = dilation
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = self.relu(out)
+
+        return out
+
+"""
 class Bottleneck(nn.Module):
 	expansion = 4
 
@@ -209,80 +270,473 @@ class Bottleneck(nn.Module):
 		out = self.relu(out)
 
 		return out
+"""
+class Decoder(nn.Module):
+	def __init__(self, outplanes, resnet):
+		super(Decoder, self).__init__()
+		low_level_inplanes = 256
+		self.resnet = resnet
+
+		self.conv1 = nn.Conv2d(low_level_inplanes, 48, 1, bias=False)
+		self.bn1 = nn.BatchNorm2d(48)
+		self.relu = nn.ReLU()
+		self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+		# self.conv2 = nn.Conv2d(2048, 256, 1, bias=False)
+		# self.bn2 = BatchNorm(256)
+		self.last_conv = nn.Sequential(nn.Conv2d(304, 256, kernel_size=3, stride=1, padding=1, bias=False),
+										nn.BatchNorm2d(256),
+										nn.ReLU(),
+										nn.Dropout(0.5),
+										nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1, bias=False),
+										nn.BatchNorm2d(256),
+										nn.ReLU(),
+										nn.Dropout(0.1),
+										nn.Conv2d(256, outplanes, kernel_size=1, stride=1),
+										nn.Sigmoid(),
+										)
+		self.last_deconv = nn.Sequential(nn.ConvTranspose2d(304, 128, kernel_size=4, stride=2, padding=1),
+									nn.BatchNorm2d(128),
+									nn.ReLU(),
+									nn.Dropout(0.5),
+									nn.ConvTranspose2d(128, 32, kernel_size=4, stride=2, padding=1),
+									nn.BatchNorm2d(32),
+									nn.ReLU(),
+									nn.Dropout(0.1),
+									)
 
 
-class PoseResNet(nn.Module):
+		self._init_weight()
+
+
+	def forward(self, x, low_level_feat): # 512, 64
+		low_level_feat = self.conv1(low_level_feat)
+		low_level_feat = self.bn1(low_level_feat)
+		low_level_feat = self.relu(low_level_feat) # 48
+
+		low_level_feat = self.maxpool(low_level_feat) 
+
+		x = F.interpolate(x, size=low_level_feat.size()[2:], mode='bilinear', align_corners=True)
+		# TODO : check ouyput size
+		x = torch.cat((x, low_level_feat), dim=1) 
+		if self.resnet == 'depth':
+			x = self.last_deconv(x)
+		elif self.resnet == 'heatmap':
+			x = self.last_conv(x)
+		else:
+			raise NotImplementedError
+
+
+		return x
+
+	def _init_weight(self):
+		for m in self.modules():
+			if isinstance(m, nn.Conv2d):
+				torch.nn.init.kaiming_normal_(m.weight)
+			elif isinstance(m, nn.ConvTranspose2d):
+				torch.nn.init.kaiming_normal_(m.weight)
+			elif isinstance(m, nn.BatchNorm2d):
+				m.weight.data.fill_(1)
+				m.bias.data.zero_()
+			
+
+class _AtrousModule(nn.Module):
+    def __init__(self, inplanes, planes, kernel_size, padding, dilation):
+        super(_AtrousModule, self).__init__()
+        self.atrous_conv = nn.Conv2d(inplanes, planes, kernel_size=kernel_size,
+                                            stride=1, padding=padding, dilation=dilation, bias=False)
+        self.bn = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU()
+
+        self._init_weight()
+
+    def forward(self, x):
+        x = self.atrous_conv(x)
+        x = self.bn(x)
+
+        return self.relu(x)
+
+    def _init_weight(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                torch.nn.init.kaiming_normal_(m.weight)
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+		
+class WASP(nn.Module):
+	def __init__(self):
+		super(WASP, self).__init__()
+		self.output_stride = 16
+		inplanes = 2048 #resnet34:512, resnet50:2048
+		if self.output_stride == 16:
+			#dilations = [ 6, 12, 18, 24]
+			dilations = [24, 18, 12,  6]
+			#dilations = [6, 6, 6, 6]
+		elif self.output_stride == 8:
+			dilations = [48, 36, 24, 12]
+
+
+		self.aspp1 = _AtrousModule(inplanes, 256, 1, padding=0, dilation=dilations[0])
+		self.aspp2 = _AtrousModule(256, 256, 3, padding=dilations[1], dilation=dilations[1])
+		self.aspp3 = _AtrousModule(256, 256, 3, padding=dilations[2], dilation=dilations[2])
+		self.aspp4 = _AtrousModule(256, 256, 3, padding=dilations[3], dilation=dilations[3])
+
+		self.global_avg_pool = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)),
+												nn.Conv2d(inplanes, 256, 1, stride=1, bias=False),
+												nn.BatchNorm2d(256),
+												nn.ReLU())
+
+		self.conv1 = nn.Conv2d(1280, 256, 1, bias=False)
+		self.conv2 = nn.Conv2d(256,256,1,bias=False)
+		self.bn1 = nn.BatchNorm2d(256)
+		self.relu = nn.ReLU()
+		self.dropout = nn.Dropout(0.5)
+		self._init_weight()
+
+	def _init_weight(self):
+		for m in self.modules():
+			if isinstance(m, nn.Conv2d):
+				# n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+				# m.weight.data.normal_(0, math.sqrt(2. / n))
+				torch.nn.init.kaiming_normal_(m.weight)
+			elif isinstance(m, nn.BatchNorm2d):
+				m.weight.data.fill_(1)
+				m.bias.data.zero_()
+			elif isinstance(m, nn.BatchNorm2d):
+				m.weight.data.fill_(1)
+				m.bias.data.zero_()
+
+	def forward(self, x):
+		x1 = self.aspp1(x)
+		x2 = self.aspp2(x1)
+		x3 = self.aspp3(x2)
+		x4 = self.aspp4(x3)
+
+		x1 = self.conv2(x1)
+		x2 = self.conv2(x2)
+		x3 = self.conv2(x3)
+		x4 = self.conv2(x4)
+		
+		x1 = self.conv2(x1)
+		x2 = self.conv2(x2)
+		x3 = self.conv2(x3)
+		x4 = self.conv2(x4)
+
+		x5 = self.global_avg_pool(x)
+		x5 = F.interpolate(x5, size=x4.size()[2:], mode='bilinear', align_corners=True)
+		x = torch.cat((x1, x2, x3, x4, x5), dim=1) # -> [10, 1280, 16, 16]
+
+		x = self.conv1(x) # -> [10, 256, 16, 16]
+		x = self.bn1(x)
+		x = self.relu(x)
+
+		return self.dropout(x) 
+
+class PoseResNet_depth(nn.Module):
 
 	def __init__(self, block, layers, cfg, **kwargs):
+		super(PoseResNet_depth, self).__init__()
 		self.inplanes = 64
-		self.deconv1_inplanes = None
-		self.deconv2_inplanes = None
+		self.output_stride =16
+		self.pretrained = True
+		BatchNorm = nn.BatchNorm2d
 		extra = cfg.MODEL.EXTRA
 		self.deconv_with_bias = extra.DECONV_WITH_BIAS
 
-		super(PoseResNet, self).__init__()
+		self.wasp = WASP()
+		self.decoder = Decoder(1,'depth')
+
+		blocks = [1, 2, 4]
+		if self.output_stride == 16:
+			#strides = [1, 1, 1, 1]
+			strides = [1, 2, 2, 1]
+			dilations = [1, 1, 1, 2]
+		elif self.output_stride == 8:
+			strides = [1, 2, 1, 1]
+			dilations = [1, 1, 2, 4]
+		else:
+			raise NotImplementedError
+
 		self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
 							   bias=False)
 		self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
 		self.relu = nn.ReLU(inplace=True)
 		self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-		self.layer1 = self._make_layer(block, 64, layers[0])
-		self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-		self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-		self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
 
-		self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-		# self.avgpool = nn.AvgPool2d(3, stride=1,padding=1)
+		self.layer1 = self._make_layer(block, 64, layers[0], stride=strides[0], dilation=dilations[0], BatchNorm=BatchNorm)
+		self.layer2 = self._make_layer(block, 128, layers[1], stride=strides[1], dilation=dilations[1], BatchNorm=BatchNorm)
+		self.layer3 = self._make_layer(block, 256, layers[2], stride=strides[2], dilation=dilations[2], BatchNorm=BatchNorm)
+		self.layer4 = self._make_MG_unit(block, 512, blocks=blocks, stride=strides[3], dilation=dilations[3], BatchNorm=BatchNorm)
 
-		# used for deconv layers
-		self.deconv_layers = self._make_deconv_layer(
-			extra.NUM_DECONV_LAYERS, # 5
-			[256,128,64,32,1], # [256,128,64,32,3]
-			extra.NUM_DECONV_KERNELS, # [4,4,4,4,4]
-			self.inplanes,
-		)
-		# self.deconv_layers2 = self._make_deconv_layer(
-		#     extra.NUM_DECONV_LAYERS, # 5
-		#     [256,128,64,32,24], # 512x512 
-		#     extra.NUM_DECONV_KERNELS, # [4,4,4,4,4]
-		#     self.inplanes,
-		# )
 
-		# self.final_layer = 
-		#     nn.Conv2d(
-		#     in_channels=extra.NUM_DECONV_FILTERS[-1],
-		#     out_channels=cfg.MODEL.NUM_JOINTS,
-		#     kernel_size=extra.FINAL_CONV_KERNEL,
-		#     stride=1,
-		#     padding=1 if extra.FINAL_CONV_KERNEL == 3 else 0
-		# )
 
-		self.final_layer =  nn.Sequential(
-			nn.Conv2d(
-			in_channels=512,
-			out_channels=24,
-			kernel_size=3,
-			stride=1,
-			padding=1
-			),
-			nn.BatchNorm2d(24, momentum=BN_MOMENTUM),
-			nn.ReLU(inplace=True)
+		self.deconv_depth = nn.Sequential(
+			nn.ConvTranspose2d(32, 1, kernel_size=4, stride=2, padding=1),
+			nn.Sigmoid(),
 		)
 
-		self.deconv_layer1 = self._make_deconv_layer2(2048,1024)
-		self.deconv_layer2 = self._make_deconv_layer2(1024,512)
-		self.deconv_layer3 = self._make_deconv_layer2(512,128)
-		self.deconv_layer4 = self._make_deconv_layer2(128,64)
-		self.deconv_layer5 = self._make_deconv_layer2(64,1)
+		self.deconv_sil = nn.Sequential(
+			nn.ConvTranspose2d(32, 1, kernel_size=4, stride=2, padding=1),
+			nn.Sigmoid(),
+		)
+		# self.deconv_layer1 = self._make_deconv_layer(512,256)
+		# self.deconv_layer2 = self._make_deconv_layer(256,128)
+		# self.deconv_layer3 = self._make_deconv_layer(128,64)
+		# self.deconv_layer4 = self._make_deconv_layer(64,32)
+		# self.deconv_layer5 = nn.Sequential(
+		# 	nn.ConvTranspose2d(
+		# 		in_channels=32,
+		# 		out_channels=1,
+		# 		kernel_size=4,
+		# 		stride=2,
+		# 		padding=1,
+		# 		bias=self.deconv_with_bias
+		# 					   ),
+		# 	nn.BatchNorm2d(1, momentum=BN_MOMENTUM),
+		# 	nn.Sigmoid(),
+		# 	)
+
 		
-		# self.deccam_trans = nn.Linear(2048, 3)
-		# self.deccam_rot = nn.Linear(2048, 3)
-		# self.conv_layer1 = nn.Sequential(
-		#     nn.Conv2d(512,24,3,1,1),
-		#     nn.BatchNorm2d(24, momentum=BN_MOMENTUM),
-		#     nn.LeakyReLU(inplace=True)
-		# )
-	def _make_deconv_layer2(self,in_planes, out_planes, kernel=4, stride=2, padding=1):
+		self._init_weight()
+		if self.pretrained:
+			self._load_pretrained_model()
+
+	def _load_pretrained_model(self):
+		#pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth')
+		pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet34-333f7ec4.pth')
+		# pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet50-19c8e357.pth')
+		# pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet101-5d3b4d8f.pth')
+		
+		model_dict = {}
+		state_dict = self.state_dict()
+		for k, v in pretrain_dict.items():
+			if k in state_dict:
+				model_dict[k] = v
+		state_dict.update(model_dict)
+		self.load_state_dict(state_dict)
+
+	def _init_weight(self):
+		for m in self.modules():
+			if isinstance(m, nn.Conv2d):
+				n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+				m.weight.data.normal_(0, math.sqrt(2. / n))
+			elif isinstance(m, nn.BatchNorm2d):
+				m.weight.data.fill_(1)
+				m.bias.data.zero_()
+			elif isinstance(m, nn.BatchNorm2d):
+				m.weight.data.fill_(1)
+				m.bias.data.zero_()
+
+	def _make_deconv_layer(self,in_planes, out_planes, kernel=4, stride=2, padding=1):
+		return nn.Sequential(
+			nn.ConvTranspose2d(
+				in_channels=in_planes,
+				out_channels=out_planes,
+				kernel_size=kernel,
+				stride=stride,
+				padding=padding,
+				bias=self.deconv_with_bias
+							   ),
+			nn.BatchNorm2d(out_planes, momentum=BN_MOMENTUM),
+			nn.ReLU(inplace=True),
+			nn.Dropout(0.1),
+			)
+	
+	def _make_layer(self, block, planes, blocks, stride=1, dilation=1, BatchNorm=None):
+		downsample = None
+		if stride != 1 or self.inplanes != planes * block.expansion:
+			downsample = nn.Sequential(
+				nn.Conv2d(self.inplanes, planes * block.expansion,
+							kernel_size=1, stride=stride, bias=False),
+				BatchNorm(planes * block.expansion),
+			)
+
+		layers = []
+		layers.append(block(self.inplanes, planes, stride, dilation, downsample, BatchNorm))
+		self.inplanes = planes * block.expansion
+		for i in range(1, blocks):
+			layers.append(block(self.inplanes, planes, dilation=dilation, BatchNorm=BatchNorm))
+
+		return nn.Sequential(*layers)
+
+	def _make_MG_unit(self, block, planes, blocks, stride=1, dilation=1, BatchNorm=None):
+		downsample = None
+		if stride != 1 or self.inplanes != planes * block.expansion:
+			downsample = nn.Sequential(
+				nn.Conv2d(self.inplanes, planes * block.expansion,
+							kernel_size=1, stride=stride, bias=False),
+				BatchNorm(planes * block.expansion),
+			)
+
+		layers = []
+		layers.append(block(self.inplanes, planes, stride, dilation=blocks[0]*dilation,
+							downsample=downsample, BatchNorm=BatchNorm))
+		self.inplanes = planes * block.expansion
+		for i in range(1, len(blocks)):
+			layers.append(block(self.inplanes, planes, stride=1,
+								dilation=blocks[i]*dilation, BatchNorm=BatchNorm))
+
+		return nn.Sequential(*layers)
+
+	
+	def _load_pretrained_model(self):
+		#pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth')
+		#pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet34-333f7ec4.pth')
+		pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet50-19c8e357.pth')
+		# pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet101-5d3b4d8f.pth')
+		
+		model_dict = {}
+		state_dict = self.state_dict()
+		for k, v in pretrain_dict.items():
+			if k in state_dict:
+				model_dict[k] = v
+		state_dict.update(model_dict)
+		self.load_state_dict(state_dict)
+
+	def forward(self, x): # -> 3x256x256
+		x = self.conv1(x) # -> 64x128x128
+		x = self.bn1(x)
+		x = self.relu(x)
+		x = self.maxpool(x) # -> 64x64x64
+
+		low_level_feat = self.layer1(x) # ->256x64x64
+		x_1 = self.layer2(low_level_feat) # ->512x32x32
+		x_2 = self.layer3(x_1) # ->1024x16x16
+		x = self.layer4(x_2) # ->2048x16x16
+
+		temp_x = self.wasp(x) # -> 256x16x16
+		"""
+		x_= self.deconv_layer1(x_) #->128x16x16
+		x_= self.deconv_layer2(x_) #->64x32x32
+		x_= self.deconv_layer3(x_) #->32x64x64
+		x_= self.deconv_layer4(x_+low_level_feat) #->32x64x64
+		x_= self.deconv_layer5(x_) # 32+64= 96x64x64->
+		"""
+	 	# TODO : change interpolate to deconv only dep,silhouette
+		x_ = self.decoder(temp_x,low_level_feat)
+		x_depthmap = self.deconv_depth(x_)
+		x_silhouette  = self.deconv_sil(x_)
+		# final bilinear interpolation to reach the original input size
+		depthmap = F.interpolate(x_depthmap, size=(256,256), mode='bilinear', align_corners=True)
+		silhouette = F.interpolate(x_silhouette, size=(256,256), mode='bilinear', align_corners=True)
+
+
+		res = {
+			'depthmap':depthmap, 
+			'silhouette' :silhouette,
+			'embed_feature':temp_x,
+		}
+
+		return res
+
+class PoseResNet_heatmap(nn.Module):
+
+	def __init__(self, block, layers, cfg, **kwargs):
+		super(PoseResNet_heatmap, self).__init__()
+		self.inplanes = 64
+
+		self.output_stride =16
+		self.pretrained = True
+		BatchNorm = nn.BatchNorm2d
+		blocks = [1, 2, 4]
+		if self.output_stride == 16:
+			#strides = [1, 1, 1, 1]
+			strides = [1, 2, 2, 1]
+			dilations = [1, 1, 1, 2]
+		elif self.output_stride == 8:
+			strides = [1, 2, 1, 1]
+			dilations = [1, 1, 2, 4]
+		else:
+			raise NotImplementedError
+
+
+		extra = cfg.MODEL.EXTRA
+		self.deconv_with_bias = extra.DECONV_WITH_BIAS
+
+		self.wasp = WASP()
+		self.decoder = Decoder(15,'heatmap')
+		self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
+							   bias=False)
+		self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
+		self.relu = nn.ReLU(inplace=True)
+		self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+
+		self.layer1 = self._make_layer(block, 64, layers[0], stride=strides[0], dilation=dilations[0], BatchNorm=BatchNorm)
+		self.layer2 = self._make_layer(block, 128, layers[1], stride=strides[1], dilation=dilations[1], BatchNorm=BatchNorm)
+		self.layer3 = self._make_layer(block, 256, layers[2], stride=strides[2], dilation=dilations[2], BatchNorm=BatchNorm)
+		self.layer4 = self._make_MG_unit(block, 512, blocks=blocks, stride=strides[3], dilation=dilations[3], BatchNorm=BatchNorm)
+
+
+
+
+		"""
+		self.deconv_layer1 = self._make_deconv_layer(512,256)
+		self.deconv_layer2 = self._make_deconv_layer(256,128)
+		self.deconv_layer3 = self._make_deconv_layer(128,64)
+		self.deconv_layer4 = self._make_deconv_layer(64,32)
+		self.deconv_layer4_ = self._make_deconv_layer(64,32)
+		self.deconv_layer5 = nn.Sequential(
+			nn.ConvTranspose2d(
+				in_channels=32,
+				out_channels=1,
+				kernel_size=4,
+				stride=2,
+				padding=1,
+				bias=self.deconv_with_bias
+							   ),
+			nn.BatchNorm2d(1, momentum=BN_MOMENTUM),
+			nn.Sigmoid(),
+			)
+		self.deconv_layer5_ = nn.Sequential(
+			nn.ConvTranspose2d(
+				in_channels=32,
+				out_channels=1,
+				kernel_size=4,
+				stride=2,
+				padding=1,
+				bias=self.deconv_with_bias
+							   ),
+			nn.BatchNorm2d(1, momentum=BN_MOMENTUM),
+			nn.ReLU(inplace=True),
+			)
+		"""
+		self._init_weight()
+		if self.pretrained:
+			self._load_pretrained_model()
+
+
+
+	def _load_pretrained_model(self):
+		#pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth')
+		# pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet34-333f7ec4.pth')
+		pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet50-19c8e357.pth')
+		# pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet101-5d3b4d8f.pth')
+		
+		model_dict = {}
+		state_dict = self.state_dict()
+		for k, v in pretrain_dict.items():
+			if k in state_dict:
+				model_dict[k] = v
+		state_dict.update(model_dict)
+		self.load_state_dict(state_dict)
+
+	def _init_weight(self):
+		for m in self.modules():
+			if isinstance(m, nn.Conv2d):
+				n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+				m.weight.data.normal_(0, math.sqrt(2. / n))
+			elif isinstance(m, nn.BatchNorm2d):
+				m.weight.data.fill_(1)
+				m.bias.data.zero_()
+			elif isinstance(m, nn.BatchNorm2d):
+				m.weight.data.fill_(1)
+				m.bias.data.zero_()
+
+	def _make_deconv_layer(self,in_planes, out_planes, kernel=4, stride=2, padding=1):
 		return nn.Sequential(
 			nn.ConvTranspose2d(
 				in_channels=in_planes,
@@ -296,153 +750,62 @@ class PoseResNet(nn.Module):
 			nn.ReLU(inplace=True),
 			)
 	
-	def _make_layer(self, block, planes, blocks, stride=1):
+	def _make_layer(self, block, planes, blocks, stride=1, dilation=1, BatchNorm=None):
 		downsample = None
 		if stride != 1 or self.inplanes != planes * block.expansion:
 			downsample = nn.Sequential(
 				nn.Conv2d(self.inplanes, planes * block.expansion,
-						  kernel_size=1, stride=stride, bias=False),
-				nn.BatchNorm2d(planes * block.expansion, momentum=BN_MOMENTUM),
+							kernel_size=1, stride=stride, bias=False),
+				BatchNorm(planes * block.expansion),
 			)
 
 		layers = []
-		layers.append(block(self.inplanes, planes, stride, downsample))
+		layers.append(block(self.inplanes, planes, stride, dilation, downsample, BatchNorm))
 		self.inplanes = planes * block.expansion
 		for i in range(1, blocks):
-			layers.append(block(self.inplanes, planes))
+			layers.append(block(self.inplanes, planes, dilation=dilation, BatchNorm=BatchNorm))
 
 		return nn.Sequential(*layers)
 
-	def _get_deconv_cfg(self, deconv_kernel, index):
-		if deconv_kernel == 4:
-			padding = 1
-			output_padding = 0
-		elif deconv_kernel == 3:
-			padding = 1
-			output_padding = 1
-		elif deconv_kernel == 2:
-			padding = 0
-			output_padding = 0
-
-		return deconv_kernel, padding, output_padding
-
-	def _make_deconv_layer(self, num_layers, num_filters, num_kernels, init_inplanes):
-		assert num_layers == len(num_filters), \
-			'ERROR: num_deconv_layers is different len(num_deconv_filters)'
-		assert num_layers == len(num_kernels), \
-			'ERROR: num_deconv_layers is different len(num_deconv_filters)'
+	def _make_MG_unit(self, block, planes, blocks, stride=1, dilation=1, BatchNorm=None):
+		downsample = None
+		if stride != 1 or self.inplanes != planes * block.expansion:
+			downsample = nn.Sequential(
+				nn.Conv2d(self.inplanes, planes * block.expansion,
+							kernel_size=1, stride=stride, bias=False),
+				BatchNorm(planes * block.expansion),
+			)
 
 		layers = []
-		for i in range(num_layers):
-			# 4, 1, 0
-			kernel, padding, output_padding = \
-				self._get_deconv_cfg(num_kernels[i], i)
-			
-			planes = num_filters[i] # [256,128,64,32,3]
-			layers.append(
-				nn.ConvTranspose2d(
-					in_channels=init_inplanes,
-					out_channels=planes,
-					kernel_size=kernel,
-					stride=2,
-					padding=padding,
-					output_padding=output_padding,
-					bias=self.deconv_with_bias))
-			layers.append(nn.BatchNorm2d(planes, momentum=BN_MOMENTUM))
-			layers.append(nn.ReLU(inplace=True))
-			init_inplanes = planes
+		layers.append(block(self.inplanes, planes, stride, dilation=blocks[0]*dilation,
+							downsample=downsample, BatchNorm=BatchNorm))
+		self.inplanes = planes * block.expansion
+		for i in range(1, len(blocks)):
+			layers.append(block(self.inplanes, planes, stride=1,
+								dilation=blocks[i]*dilation, BatchNorm=BatchNorm))
 
 		return nn.Sequential(*layers)
 
-	def forward(self, x): # -> 3x512x512
-		
-		x = self.conv1(x) # -> 64x256x256
-		x_ = x
+	def forward(self, x): # -> 3x256x256
+		x = self.conv1(x) # -> 64x128x128
 		x = self.bn1(x)
 		x = self.relu(x)
-		x = self.maxpool(x) # -> 64x128x128
+		x = self.maxpool(x) # -> 64x64x64
 
-		x_0 = self.layer1(x) # -> 256x128x128
-		x_1 = self.layer2(x_0) # -> 512x64x64
-		x_2 = self.layer3(x_1) # -> 1024x32x32
-		temp_x = self.layer4(x_2) # -> 2048x16x16
+		low_level_feat = self.layer1(x) # -> 64x64x64
+		x_1 = self.layer2(low_level_feat) # -> 128x32x32
+		x_2 = self.layer3(x_1) # -> 256x16x16
+		x = self.layer4(x_2) # -> 512x8x8
 
-		# x_avgpool = self.avgpool(temp_x).squeeze(2).squeeze(2)
-		
-		depth_feature = self.deconv_layer1(temp_x) # -> 1024x32x32
-		depth_feature = self.deconv_layer2(depth_feature+x_2) # -> 512x64x64
-		depth_feature = self.deconv_layer3(depth_feature+x_1) # -> 128x128x128
-		depth_feature = self.deconv_layer4(depth_feature) # -> 64x256x256
-		depth_feature = self.deconv_layer5(depth_feature) # -> 1x512x512
-		# joint_heatmap = self.deconv_layers2(temp_x)
-		# x = self.final_layer(x)
-		heatmap_x = self.deconv_layer1(temp_x) # -> 1024x32x32
-		heatmap_x = self.deconv_layer2(heatmap_x+x_2) # -> 512x64x64
-		# heatmap_x = self.deconv_layer3(heatmap_x+x_1) # -> 256x128x128
-		heatmap_x = self.final_layer(heatmap_x) # -> 24x64x64
-		
-		# decam_trans = self.deccam_trans(x_avgpool)
-		# decam_rot = self.deccam_rot(x_avgpool)
+		temp_x = self.wasp(x)
 
-		# decam_trans = decam_trans + torch.tensor([-5.2447, 141.3381, 33.3118]).to(decam_trans.device)
-		# decam_trans = decam_trans * torch.tensor([29.0733, 12.2508, 55.9875]).to(decam_trans.device)
-
-		res = {}
-		res.update({
-			'depthmap':depth_feature, 
-			'heatmap':heatmap_x
-		})
+		x_heatmap = self.decoder(temp_x,low_level_feat)
+		heatmap = F.interpolate(x_heatmap, size=(64,64), mode='bilinear', align_corners=True)
+		res = {
+			'heatmap':heatmap,
+			'embed_feature':temp_x,
+		}
 		return res
-
-	def init_weights(self, pretrained=''):
-		if os.path.isfile(pretrained):
-			logger.info('=> init deconv weights from normal distribution')
-			for name, m in self.deconv_layers.named_modules():
-				if isinstance(m, nn.ConvTranspose2d):
-					logger.info('=> init {}.weight as normal(0, 0.001)'.format(name))
-					logger.info('=> init {}.bias as 0'.format(name))
-					nn.init.normal_(m.weight, std=0.001)
-					if self.deconv_with_bias:
-						nn.init.constant_(m.bias, 0)
-				elif isinstance(m, nn.BatchNorm2d):
-					logger.info('=> init {}.weight as 1'.format(name))
-					logger.info('=> init {}.bias as 0'.format(name))
-					nn.init.constant_(m.weight, 1)
-					nn.init.constant_(m.bias, 0)
-			logger.info('=> init final conv weights from normal distribution')
-			for m in self.final_layer.modules():
-				if isinstance(m, nn.Conv2d):
-					# nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-					logger.info('=> init {}.weight as normal(0, 0.001)'.format(name))
-					logger.info('=> init {}.bias as 0'.format(name))
-					nn.init.normal_(m.weight, std=0.001)
-					nn.init.constant_(m.bias, 0)
-
-			# pretrained_state_dict = torch.load(pretrained)
-			logger.info('=> loading pretrained model {}'.format(pretrained))
-			# self.load_state_dict(pretrained_state_dict, strict=False)
-			checkpoint = torch.load(pretrained)
-			if isinstance(checkpoint, OrderedDict):
-				state_dict = checkpoint
-			elif isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-				state_dict_old = checkpoint['state_dict']
-				state_dict = OrderedDict()
-				# delete 'module.' because it is saved from DataParallel module
-				for key in state_dict_old.keys():
-					if key.startswith('module.'):
-						# state_dict[key[7:]] = state_dict[key]
-						# state_dict.pop(key)
-						state_dict[key[7:]] = state_dict_old[key]
-					else:
-						state_dict[key] = state_dict_old[key]
-			else:
-				raise RuntimeError(
-					'No state_dict found in checkpoint file {}'.format(pretrained))
-			self.load_state_dict(state_dict, strict=False)
-		else:
-			logger.error('=> imagenet pretrained model dose not exist')
-			logger.error('=> please download it first')
-			raise ValueError('imagenet pretrained model does not exist')
 
 
 resnet_spec = {18: (BasicBlock, [2, 2, 2, 2]),
@@ -451,290 +814,140 @@ resnet_spec = {18: (BasicBlock, [2, 2, 2, 2]),
 			   101: (Bottleneck, [3, 4, 23, 3]),
 			   152: (Bottleneck, [3, 8, 36, 3])}
 
-def get_pose_net(is_train, cfg=cfg,  **kwargs):
+def get_pose_net(model_n=None, cfg=cfg,  **kwargs):
 	num_layers = cfg.MODEL.EXTRA.NUM_LAYERS
 	# style = cfg.MODEL.STYLE
 
-	block_class, layers = resnet_spec[num_layers]
-
 	# if style == 'caffe':
 	#     block_class = Bottleneck_CAFFE
-
-	model = PoseResNet(block_class, layers, cfg, **kwargs)
-
+	if model_n == 'heatmap':
+		block_class, layers = resnet_spec[50]
+		model = PoseResNet_heatmap(block_class, layers, cfg, **kwargs)
+	elif model_n == 'depth':
+		block_class, layers = resnet_spec[50]
+		model = PoseResNet_depth(block_class, layers, cfg, **kwargs)
 	# if is_train and cfg.MODEL.INIT_WEIGHTS:
 	# 	model.init_weights(cfg.MODEL.PRETRAINED)
 
 	return model
 
-# Direct regression based
-# class Regressor1(nn.Module):
-	def __init__(self, feat_dim):
+class Regressor(nn.Module):
+	def __init__(self, heatmapfeat_c, depthmapfeat_c ):
 		super().__init__()
-		# self.conv1 = nn.Conv2d(24, 64, kernel_size=3, stride=1, padding=0,bias=False)
-		# self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
-		# self.relu = nn.ReLU(inplace=True)
-		# self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+		njoint = 16 * 3 
+		self.flatten = nn.Flatten()
 		self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-	   
-  # TODO : kaolin renderer -> smpl render to masking loss      
-		# self.renderer = 
-		self.fc1 = nn.Linear(feat_dim, 1024)
+
+		self.bilinear_layer_pose = nn.ModuleList()
+
+
+		for _ in range(2):
+			block = self._make_bilinear(1024)
+			self.bilinear_layer_pose.append(block)
+
+
+		self.fc1 = nn.Linear(heatmapfeat_c + depthmapfeat_c + 128, 1024)
+		self.bn1 = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
+		self.relu1 = nn.ReLU()
 		self.drop1 = nn.Dropout()
-		self.fc2 = nn.Linear(1024, 1024)
-		self.drop2 = nn.Dropout()
-		
-		self.decjoint_fisheye = nn.Linear(1024, 65*2)
+
+		self.conv_block0 = self._make_block(1,32)
+		self.conv_block1 = self._make_block(32,64) 
+		self.conv_block2 = self._make_block(64,128) 
+
+		self.conv_block1_ = self._make_block(15,64) 
+		self.conv_block2_ = self._make_block(64,128) 
+
+		self.decjoint = nn.Linear(1024, njoint)
 		self.deccam_trans = nn.Linear(1024, 3)
 		self.deccam_rot = nn.Linear(1024, 3)
-		nn.init.xavier_uniform_(self.decjoint_fisheye.weight, gain=0.01)
+
+		nn.init.xavier_uniform_(self.decjoint.weight, gain=0.01)
 		nn.init.xavier_uniform_(self.deccam_trans.weight, gain=0.01)
 		nn.init.xavier_uniform_(self.deccam_rot.weight, gain=0.01)
 
-	   
-		# TODO : setup mean value by xr_egopose
-
-		# init_cam_trans = torch.from_numpy(mean_params['cam']).unsqueeze(0)
-		# init_cam_rot = torch.from_numpy(mean_params['cam']).unsqueeze(0)
-		# self.register_buffer('init_pose', init_pose)
-		# self.register_buffer('init_shape', init_shape)
-		# self.register_buffer('init_cam_trans', init_cam_trans)
-		# self.register_buffer('init_cam_rot', init_cam_rot)
-
-	def forward(self, x, init_joint_fisheye=None, init_cam_trans=None, init_cam_rot=None, n_iter=1, J_regressor=None):
-		batch_size = x.shape[0]
-		"""
-		# TODO : setup init value
-
-		# if init_joint_fisheye is None:
-			
-		# if init_cam_trans is None:
-		#     init_cam_trans = self.init_cam_trans.expand(batch_size, -1)
-		# if init_cam_rot is None:
-		#     init_cam_rot = self.init_cam_rot.expand(batch_size, -1)
-
-		pred_joint_fisheye = None
-		pred_trans = init_cam_trans
-		pred_rot = init_cam_rot
-		
-		for i in range(n_iter):
-			xc = torch.cat([x, pred_pose, pred_shape, pred_trans, pred_rot], 1)
-			xc = self.fc1(xc)
-			xc = self.drop1(xc)
-			xc = self.fc2(xc)
-			xc = self.drop2(xc)
-			pred_pose = self.decpose(xc) + pred_pose
-			pred_shape = self.decshape(xc) + pred_shape
-			pred_trans = self.deccam_trans(xc) + pred_trans
-			pred_rot = self.deccam_rot(xc) + pred_rot
-		"""
-		
-		# x = self.conv1(x)
-		# x = self.bn1(x)
-		# x = self.relu(x)
-		# x = self.maxpool(x)
-		
-		x = self.avgpool(x)
-		x = x.squeeze()
-		x = self.fc1(x)
-		x = self.drop1(x)
-		x = self.fc2(x)
-		x = self.drop2(x)
-	
-		# pred_joint_fisheye_2d = self.decjoint_fisheye(x).view(-1,65,2)
-		pred_trans = self.deccam_trans(x)
-		pred_rot = self.deccam_rot(x)
-		pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(device)
-		pred_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(device)
-		"""
-		if J_regressor is not None:
-			pred_joints = torch.matmul(J_regressor, pred_vertices)
-			pred_pelvis = pred_joints[:, [0], :].clone()
-			# pred_joints = pred_joints[:, H36M_TO_J14, :]
-			pred_joints = pred_joints - pred_pelvis
-		"""
-		# TODO : change output
-		output = {
-			# 'theta'  : torch.cat([pred_trans, pred_rot, pred_joint_fisheye_2d], dim=1),
-			# 'pred_joint_fisheye_2d'  : pred_joint_fisheye_2d,
-			'pred_trans' : pred_trans,
-			'pred_rot' : pred_rot,
-		}
-		return output
-
-class Regressor2(nn.Module):
-	def __init__(self, feat_dim, smpl_mean_params):
-		super().__init__()
-
-		npose = 24 * 6
-		self.procrustes={
-			'rotation': torch.tensor([[ 0.9999647 , -0.00426632,  0.00723915],
-										[ 0.00411011,  0.99976134,  0.02145697],
-										[-0.00732896, -0.02142646,  0.9997435 ]]).T,
-			'scale': 92.3,
-			'translation': torch.tensor([  0.9100, 115.3339,  -2.7504])
-		}
-		self.fisheye_projection = FisheyeProjection()
-		self.flatten = nn.Flatten()
-		self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-		self.maxpool = nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=True)
-
-		self.conv_block0 = self._make_block(1,24)
-		self.conv_block1 = self._make_block(24,64) #512 512->256 256
-		self.conv_block2 = self._make_block(64,128) #256 256->128 128
-		self.conv_block3 = self._make_block(128,256) #128 128->64 64
-		self.conv_block4 = self._make_block(256,512) #64 64->32 32
-		self.conv_block5 = self._make_block(512,1024) #32 32->16 16
-		self.conv_block6 = self._make_block(1024,2048) #16 16->4 4 : 32768
-		
-		self.downsample_heat = self._make_downsample(24,512,4,20,0)
-		self.downsample_depth = self._make_downsample(1,512,17,33,0)
-
-		self.fc1 = nn.Linear(feat_dim, 1024)
-		self.drop1 = nn.Dropout()
-		self.fc2 = nn.Linear(1024, 1024)
-		self.drop2 = nn.Dropout()
-		self.decpose = nn.Linear(1024, npose)
-		self.decshape = nn.Linear(1024, 10)
-		self.deccam_trans = nn.Linear(1024, 3)
-		self.deccam_rot = nn.Linear(1024, 3)
-		nn.init.xavier_uniform_(self.decpose.weight, gain=0.01)
-		nn.init.xavier_uniform_(self.decshape.weight, gain=0.01)
-		# nn.init.xavier_uniform_(self.deccam_trans.weight, gain=0.01)
-		# nn.init.xavier_uniform_(self.deccam_rot.weight, gain=0.01)
-
-		self.smpl = SMPL(
-			SMPL_MODEL_DIR,
-			batch_size=20,
-			create_transl=False
-		)
-
-		# mean_params = np.load(smpl_mean_params)
-		# init_pose = torch.from_numpy(mean_params['pose'][:]).unsqueeze(0)
-		# init_shape = torch.from_numpy(mean_params['shape'][:].astype('float32')).unsqueeze(0)
-		# init_cam_trans = torch.from_numpy(mean_params['cam']).unsqueeze(0)
-		# init_cam_rot = torch.from_numpy(mean_params['cam']).unsqueeze(0)
-		# self.register_buffer('init_pose', init_pose)
-		# self.register_buffer('init_shape', init_shape)
-		# self.register_buffer('init_cam_trans', init_cam_trans)
-		# self.register_buffer('init_cam_rot', init_cam_rot)
-
-	def _make_downsample(self, in_channels, out_channels, kernel, stride, padding):
+	def _make_block(self,in_channels, out_channels, kernel_size=4, stride=2, padding=1):
 		return nn.Sequential(
 			nn.Conv2d(in_channels=in_channels,
 					  out_channels=out_channels,
-					  kernel_size=kernel,
+					  kernel_size=kernel_size,
 					  stride=stride,
-					  padding=padding
-					  ),
-			nn.BatchNorm2d(out_channels,momentum=BN_MOMENTUM),
-			nn.LeakyReLU(inplace=True)
+					  padding=padding),
+			nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM),
+			nn.ReLU(inplace=True),
+			nn.Dropout(p=0.2),
+		)
+	
+	def _make_bilinear(self,in_dim):
+		return nn.Sequential(
+			nn.Linear(in_dim, 1024),
+			nn.BatchNorm1d(1024,momentum=BN_MOMENTUM),
+			nn.ReLU(),
+			nn.Dropout(),
+			nn.Linear(1024, 1024),
+			nn.BatchNorm1d(1024,momentum=BN_MOMENTUM),
+			nn.ReLU(),
+			nn.Dropout(),
 		)
 
-	def forward(self, heatmap, depthmap, init_cam_trans=None, init_cam_rot=None, n_iter=1, J_regressor=None):
-		x=heatmap # 24 64 64
-		x2=depthmap # 1 512 512
-
-
+		
+	def forward(self, heatmap_embed, heatmap, depthmap_embed, depthmap):
+		x=heatmap_embed # 256x8x8
+		x2=depthmap_embed # 256x8x8
+		x3=depthmap # 1x256x256
+		# x4=heatmap # 15x64x64
+		# TODO : heatmap 입력 argmax로 차원당 1 하나씩
 		batch_size = x.shape[0]
 
-		# if init_pose is None:
-		# 	init_pose = self.init_pose.expand(batch_size, -1)
-		# if init_shape is None:
-		# 	init_shape = self.init_shape.expand(batch_size, -1)
-		# if init_cam_trans is None:
-		# 	init_cam_trans = self.init_cam_trans.expand(batch_size, -1)
-		# if init_cam_rot is None:
-		# 	init_cam_rot = self.init_cam_rot.expand(batch_size, -1)
+		x = self.avgpool(x) #256
 
-		# pred_pose = init_pose
-		# pred_shape = init_shape
+		x2 = self.avgpool(x2) # 256
 
-		# pred_trans = init_cam_trans
-		# pred_rot = init_cam_rot
-
-		# pred_trans = pred_trans - torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_trans.device)
-		# pred_trans = pred_trans / torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_trans.device)
+		x3 = self.conv_block0(x3) #
+		x3 = self.conv_block1(x3) #
+		x3 = self.conv_block2(x3) # -> 128
+		x3 = self.avgpool(x3) 
 		
 
-		residual_x = x # 24x64x64
-		residual_x2 = x2
+		# x4 = self.conv_block1_(x4) #
+		# x4 = self.conv_block2_(x4) # -> 128
+		# x4 = self.avgpool(x4)
+		# max_values, max_indices = torch.max(x4.view(x4.size(0), 15, -1), dim=2)
 
-		x = self.conv_block1(x) # 24x64x64->64x32x32
-		x = self.conv_block2(x) # 64x32x32->128x16x16
-		x = self.conv_block3(x) # 128x16x16->256x8x8
-		x = self.conv_block4(x) # 256x8x8->512x4x4
-		residual_x = self.downsample_heat(residual_x)
-		x = self.avgpool(x+residual_x) # 512
-		# x = self.avgpool(x) # 512
+		# # 1D 인덱스를 2D (x, y) 좌표로 변환합니다.
+		# y_coords = max_indices // 64
+		# x_coords = max_indices % 64
 
-		x2 = self.conv_block0(x2) #1x512x512->24x256x256 
-		x2 = self.conv_block1(x2) #24x256x256->64x128x128
-		# x2 = self.conv_block2(x2) #64x128x128->128x64x64
-		# x2 = self.conv_block3(x2) #128x64x64->256x32x32
-		# x2 = self.conv_block4(x2) #256x32x32->512x16x16
-		# # x2 = self.conv_block5(x2) 
-		# residual_x2 = self.downsample_depth(residual_x2)
-		# x2 = self.avgpool(x2+residual_x2) # 512
-		x2 = self.avgpool(x2) # 64
+		# # 결과를 (배치 크기, 15, 2) 크기의 텐서로 반환합니다.
+		# joint_coords = torch.stack((x_coords, y_coords), dim=2) / 10
+		# joint_coords = self.flatten(joint_coords)
 
-		x = x.squeeze()
-		x2 = x2.squeeze()
+		heatmap_e_feat = x.view(batch_size,-1)
+		depth_feat = x2.view(batch_size,-1)
+		depthmap_feat = x3.view(batch_size,-1) 
+		# heatmap_feat = x4.view(batch_size,-1)
 
-		# for i in range(n_iter):
-		xc = torch.cat([x, x2], 1)
-		xc = self.fc1(xc)
-		xc = self.drop1(xc)
-		xc = self.fc2(xc)
-		xc = self.drop2(xc)
-		pred_pose = self.decpose(xc)
-		pred_shape = self.decshape(xc)
-		pred_trans = self.deccam_trans(xc)
-		pred_rot = self.deccam_rot(xc) 
+		total_feat = torch.cat([heatmap_e_feat, depth_feat, depthmap_feat], 1)
 
-		pred_rotmat = rot6d_to_rotmat(pred_pose).view(batch_size, 24, 3, 3)
+		pred_joint = self.fc1(total_feat)
+		pred_joint = self.bn1(pred_joint)
+		pred_joint = self.relu1(pred_joint)
+		pred_joint = self.drop1(pred_joint)
+		pose_residual = pred_joint
 
-		pred_output = self.smpl(
-			betas=pred_shape,
-			body_pose=pred_rotmat[:, 1:],
-			global_orient=pred_rotmat[:, 0].unsqueeze(1),
-			pose2rot=False
-		)
+		for layer in self.bilinear_layer_pose:
+			pred_joint = layer(pred_joint)
+			pred_joint += pose_residual
 
-		pred_vertices = pred_output.vertices
-		pred_joints = pred_output.joints[:,:24,:]
 
-		pred_joints = torch.einsum('bij,kj->bik',pred_joints,self.procrustes['rotation'].to(pred_joints.device))
-		pred_joints *= self.procrustes['scale']
-		pred_joints += self.procrustes['translation'].to(pred_joints.device)
-		# pred_smpl_joints = pred_output.smpl_joints
-		# pred_keypoints_2d = projection(pred_joints, pred_trans)
-
-		# pred_trans *= torch.tensor([29.0733, 12.2508, 55.9875]).to(pred_joints.device)
-		# pred_trans += torch.tensor([-5.2447, 141.3381, 33.3118]).to(pred_joints.device)
-		pred_keypoints_2d = self.fisheye_projection(pred_joints, pred_rot, pred_trans)
-		pose = rotation_matrix_to_angle_axis(pred_rotmat.reshape(-1, 3, 3)).reshape(-1, 72)
-
-		if J_regressor is not None:
-			pred_joints = torch.matmul(J_regressor, pred_vertices)
-			pred_pelvis = pred_joints[:, [0], :].clone()
-			# pred_joints = pred_joints[:, H36M_TO_J14, :]
-			pred_joints = pred_joints - pred_pelvis
-
-		output = {
-			'theta'  : torch.cat([pred_trans, pred_shape, pose], dim=1),
-			'verts'  : pred_vertices,
-			'fisheye_kp_2d'  : pred_keypoints_2d,
-			'kp_3d'  : pred_joints,
-			# 'smpl_kp_3d' : pred_smpl_joints,
-			'rotmat' : pred_rotmat,
-			'pred_cam_trans' : pred_trans,
-			'pred_cam_rot' : pred_rot,
-			# 'pred_shape': pred_shape,
-			# 'pred_pose': pred_pose,
+		pred_joint = self.decjoint(pred_joint).view(-1,16,3)
+	
+		res = {
+			# 'pred_trans' : pred_trans,
+			# 'pred_rot' : pred_rot,
+			'pred_joint': pred_joint,
 		}
-		return output
-
+		return res
 	
 	def _make_block(self,in_channels, out_channels, kernel_size=4, stride=2, padding=1):
 		return nn.Sequential(
@@ -744,55 +957,12 @@ class Regressor2(nn.Module):
 					  stride=stride,
 					  padding=padding),
 			nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM),
-			nn.LeakyReLU(inplace=True),
+			nn.ReLU(inplace=True),
 			nn.Dropout(p=0.2),
-			# nn.ReLU(inplace = True),
-			# nn.MaxPool2d(kernel_size=2,
-			#              stride=2,
-			#              ceil_mode=True),
 		)
 
-class FisheyeProjection(nn.Module):
-	def __init__(self):
-		super().__init__()
-		# TODO : K 스케일 확인할것 
-		self.K = torch.tensor([[352.59619801644876, 0.0, 0.0],
-				  [0.0, 352.70276325061578, 0.0],
-				  [654.6810228318458, 400.952228031277, 1.0]]).T
-		self.D = torch.tensor([-0.05631891929412012, -0.0038333424842925286,
-						-0.00024681888617308917, -0.00012153386798050158])
-		self.Mmaya = torch.tensor([[1, 0, 0, 0],
-							[0, -1, 0, 0],
-							[0, 0, -1, 0],
-							[0, 0, 0, 1]],dtype=torch.float64)
-	 
 
-	def forward(self, points_3d, rotate, translation, resize=(512,512)):
-		batch_size = len(points_3d)
-		rotate = create_euler(rotate)
-		rotate[:,:,:3,3] = translation.unsqueeze(1)
-		Mf = torch.linalg.inv(rotate)
-		M = self.Mmaya.T.float()@Mf.float()
-		M = M.squeeze(1).to(points_3d.device)
-		self.K = self.K.to(points_3d.device)
-		# Transform points to camera coordinate system
-		points_homogeneous = torch.cat((points_3d, torch.ones((batch_size,24,1), device=points_3d.device)), dim=-1)
-		# P_ext = torch.cat((self.M[:3,:3], self.t), dim=-1)
-		points_camera = torch.einsum('bij,bkj->bki',M,points_homogeneous)
-
-		# Project points to the normalized image plane
-		points_normalized = points_camera[:, :, :2] / points_camera[:, :, 2].unsqueeze(-1)
-
-		# Apply fisheye distortion
-		r = torch.norm(points_normalized, p=2, dim=-1)
-		theta = torch.atan2(r, torch.ones_like(r))
-		theta_d = theta * (1 + self.D[0] * theta**2 + self.D[1] * theta**4 + self.D[2] * theta**6 + self.D[3] * theta**8)
-		points_distorted = points_normalized * (theta_d / r).unsqueeze(-1)
-
-		# Project distorted points to the image plane
-		res = torch.matmul(points_distorted, self.K[:2, :2]) + self.K[:2, 2]
-		if resize is not None:
-			H,W=800,1280
-			norm_res = res/torch.tensor([W,H]).to(res.device)
-			res = norm_res * torch.tensor(resize).to(res.device)
-		return res
+	
+class CustomActivation(nn.Module):
+    def forward(self, x):
+        return torch.clamp(x, 0, 1)

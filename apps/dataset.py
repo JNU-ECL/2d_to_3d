@@ -96,9 +96,21 @@ class temp_dataset(Dataset):
 		self.IMAGE = load_data(self.root,'rgba')
 		self.subject_names=self.IMAGE.keys()
 
-		self.xR_2_SMPL=[2,31,61,62,27,57,63,4,34,64,29,59,0,28,58,1,3,33,5,35,6,36,11,41]
-		self.skip_num = [13, 14, 15]
-		
+		self.xR_2_SMPL=[2,31,61,62,27,57,63,4,34,64,
+		  				29,59,0,28,58,-1,3,33,5,35,
+						6,36,11,41,1]
+		self.skip_num = [28,58,-1]
+
+		self.Khmc = torch.tensor([[352.59619801644876, 0.0, 0.0],
+					[0.0, 352.70276325061578, 0.0],
+					[654.6810228318458, 400.952228031277, 1.0]]).T
+		self.kd = torch.tensor([-0.05631891929412012, -0.0038333424842925286,
+						-0.00024681888617308917, -0.00012153386798050158])
+
+		self.Mmaya = torch.tensor([[1., 0., 0., 0.],
+							[0., -1., 0., 0.],
+							[0., 0., -1., 0.],
+							[0., 0., 0., 1.]])
 		if self.is_train:
 			self.JSON = load_data(self.root,'json')
 			self.SEGMAP = load_data(self.root,'objectId')
@@ -133,11 +145,34 @@ class temp_dataset(Dataset):
 		transform = transforms.Compose([
 			transforms.ToPILImage(),
 			transforms.Resize(resize, Image.BILINEAR),
+			transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
 			transforms.ToTensor(),
-			# transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
 		])
 		return transform(img)
-		
+	
+	def get_silhouette(self,img_path,resize=(512,512)):
+		img = cv2.imread(img_path,cv2.IMREAD_COLOR)
+		img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+		silhouette = np.zeros_like(img[:,:,0])
+	
+		not_black = np.any(img != [0, 0, 0], axis=-1)
+
+		silhouette[not_black] = 255
+
+		# h,w,c = img.shape
+		# c_h,c_w = h//2,w//2
+		# radius = min(c_h,c_w) + 100
+		# mask = np.zeros_like(img)
+		# cv2.circle(mask, (c_w,c_h), radius, (255, 255, 255), -1)
+		# cropped_img = cv2.bitwise_and(img, mask)
+		transform = transforms.Compose([
+			transforms.ToPILImage(),
+			transforms.Resize(resize, Image.BILINEAR),
+			transforms.ToTensor(),
+		])
+		return transform(silhouette)
+
 	def get_camera(self,json_path):
 		temp_json=None
 		with open(json_path,'r') as f:
@@ -166,7 +201,7 @@ class temp_dataset(Dataset):
 
 		return transform(img)
 
-	def get_3d_joints(self,json_path):
+	def get_3d_joints(self,json_path,cam_coord=False):
 		"""
 		This function get xR_ego_dataset and convert to SMPL style points.
 		Input:
@@ -177,37 +212,41 @@ class temp_dataset(Dataset):
 		temp_json=None
 		with open(json_path,'r') as f:
 			temp_json=json.loads(f.read())
-		joints = np.vstack([j['trans'] for j in temp_json['joints']]).T
+		if cam_coord:
+			joints = temp_json['pts3d_fisheye']
+		else:
+			joints = np.vstack([j['trans'] for j in temp_json['joints']]).T
+		assert len(joints[0])==65, f'pts3d_fisheye len wrong {json_path}'
 		x=torch.tensor(joints[0])
 		y=torch.tensor(joints[1])
 		z=torch.tensor(joints[2])
-		res=[x,y,z]
-		res = torch.stack(res,0).to(torch.float32).T
-		ego_pose_label = res
+		temp_joints = [x,y,z]
+		temp_joints = torch.stack(temp_joints,0).to(torch.float32).T
+		ego_pose_label = temp_joints
 		
 		SMPL_label=[]
 		for xR_idx in self.xR_2_SMPL:
 			if xR_idx in self.skip_num : continue
-			SMPL_label.append(res[xR_idx])
+			SMPL_label.append(temp_joints[xR_idx])
 		SMPL_label=torch.stack(SMPL_label)
 		# self.temp_view(SMPL_label)
 		return SMPL_label
 	#TODO : 굳이 SMPL 에서 2d projection을 할 필요는 없지않나.. 	
-	def get_2d_joints(self,json_path):
-		temp_json=None
-		res=None
-		with open(json_path,'r') as f:
-			temp_json=json.loads(f.read())
-		h_fov = torch.tensor(temp_json['camera']['cam_fov'])
-		translation = torch.tensor(temp_json['camera']['trans'])
-		rotation = torch.tensor(temp_json['camera']['rot']) * np.pi / 180.0
-		joints_3d= self.get_3d_joints(json_path)
+	# def get_2d_joints(self,json_path):
+	# 	temp_json=None
+	# 	res=None
+	# 	with open(json_path,'r') as f:
+	# 		temp_json=json.loads(f.read())
+	# 	h_fov = torch.tensor(temp_json['camera']['cam_fov'])
+	# 	translation = torch.tensor(temp_json['camera']['trans'])
+	# 	rotation = torch.tensor(temp_json['camera']['rot']) * np.pi / 180.0
+	# 	joints_3d = self.get_3d_joints(json_path)
 		
 		
-		joints_2d = projection_temp_dataset(joints_3d,translation,rotation)
-		return joints_2d
+	# 	joints_2d = projection_temp_dataset(joints_3d,translation,rotation)
+	# 	return joints_2d
 	
-	def get_fisheye_2d_joints(self, json_path, resize=(512,512)):
+	def get_fisheye_2d_joints(self, json_path, resize=(512,512), cam_coord = True):
 		"""
 		TODO:
 		Input:
@@ -219,9 +258,24 @@ class temp_dataset(Dataset):
 		res=None
 		with open(json_path,'r') as f:
 			temp_json=json.loads(f.read())
+
+		if cam_coord:
+			temp_joints = torch.tensor(temp_json['pts2d_fisheye']).T # json 안쪽에 pts2d_fisheye 데이터 결측치 있음 
+			SMPL_label=[]
+			for xR_idx in self.xR_2_SMPL:
+				if xR_idx in self.skip_num : continue
+				SMPL_label.append(temp_joints[xR_idx])
+			SMPL_label=torch.stack(SMPL_label)
+			res = SMPL_label
+			if resize is not None:
+				H,W=800,1280
+				norm_res = res/torch.tensor([W,H])
+				res = norm_res * torch.tensor(resize)	
+			return res
+
 		translation = torch.tensor(temp_json['camera']['trans'])
 		rotation = torch.tensor(temp_json['camera']['rot']) * np.pi / 180.0
-		joints_3d = self.get_3d_joints(json_path).T
+		joints_3d = self.get_3d_joints(json_path,True).T
 		
 		
 		Khmc = torch.tensor([[352.59619801644876, 0.0, 0.0],
@@ -267,7 +321,7 @@ class temp_dataset(Dataset):
 	# 가우시안 분포를 생성하는 함수
 	def generate_gaussian_heatmap(self,joint_location,image_size=[64,64], sigma=2):
 		x, y = joint_location
-		x, y = np.array(x),np.array(y)
+		x, y = max(np.array(1),np.array(x)),max(np.array(1),np.array(y))
 		grid_y, grid_x = np.mgrid[0:image_size[1], 0:image_size[0]]
 		dist = (grid_x - x) ** 2 + (grid_y - y) ** 2
 		heatmap = np.exp(-dist / (2 * sigma**2))
@@ -281,7 +335,7 @@ class temp_dataset(Dataset):
 		return heatmap_gt
 	
 	#TODO : gaussian code 
-	def get_gaussian_heatmap(self,json_path):
+	def get_gaussian_heatmap(self,json_path,sigma=2):
 
 		"""
 		# 관절 위치, 가우시안 분포 크기, 이미지 크기를 지정합니다.
@@ -294,7 +348,7 @@ class temp_dataset(Dataset):
 		"""
 		res=None
 		fisheye_joint_labels = self.get_fisheye_2d_joints(json_path,resize=(64,64))
-		res = self.generate_heatmap_gt(fisheye_joint_labels)
+		res = self.generate_heatmap_gt(fisheye_joint_labels,sigma=sigma)
 		return res
 
 	def get_info(self,json_path):
@@ -313,31 +367,36 @@ class temp_dataset(Dataset):
 	def __getitem__(self, index):
 		# assert self.transform is not None
 		img_path=get_path(index,self.IMAGE)
-		json_path=get_path(index,self.JSON)
-		seg_path=get_path(index,self.SEGMAP)
-		depth_path=get_path(index,self.DEPTH)
-	   
 		image=self.get_rgba(img_path)
-		joints_3d=self.get_3d_joints(json_path)
-		# joints_2d=self.get_2d_joints(json_path)
-		seg_image=self.get_rgba(seg_path)
-		camera_info=self.get_camera(json_path)
-		depth_map=self.get_depth(depth_path)
-		fisheye_joints_2d=self.get_fisheye_2d_joints(json_path,resize=(512,512))
-		heatmap=self.get_gaussian_heatmap(json_path)
-
+		
 		res={}
 		if self.is_train:
+			json_path=get_path(index,self.JSON)
+			seg_path=get_path(index,self.SEGMAP)
+			depth_path=get_path(index,self.DEPTH)	
+
+			joints_3d_world = self.get_3d_joints(json_path,cam_coord=False)
+			joints_3d_cam = self.get_3d_joints(json_path,cam_coord=True)
+			# joints_2d=self.get_2d_joints(json_path)
+
+			silhouette_image=self.get_silhouette(seg_path)
+			camera_info=self.get_camera(json_path)
+			depth_map=self.get_depth(depth_path)
+			fisheye_joints_2d=self.get_fisheye_2d_joints(json_path,resize=(512,512))
+			heatmap=self.get_gaussian_heatmap(json_path)
+			heatmap_1=self.get_gaussian_heatmap(json_path,sigma=1.8)
 			res.update({
 				'info' : img_path,
 				'image': image,
-				'joints_3d' : joints_3d,
+				'joints_3d' : joints_3d_world,
+				'joints_3d_cam' : joints_3d_cam,
 				# 'joints_2d' : joints_2d, 
-				'seg_image': seg_image,
+				'silhouette': silhouette_image,
 				'depth' : depth_map,
 				'camera_info': camera_info,
 				'fisheye_joints_2d' : fisheye_joints_2d,
-				'heatmap' : heatmap
+				'heatmap' : heatmap,
+				'heatmap_1' : heatmap_1,
 			})
 			return res
 		res.update({

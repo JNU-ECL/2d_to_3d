@@ -276,15 +276,20 @@ def projection_temp(pred_joints, pred_camera_trans, pred_camera_rots ,retain_z=F
 	return pred_keypoints_2d
 
 
-def create_euler(pred_camera_rots):
+def create_euler(pred_camera_rots,is_3x3=False):
 	batch_size=len(pred_camera_rots)
 	
 	ret_pred_rot = []
 
 	for i in range(batch_size):
-		x_rot=Rot_x(pred_camera_rots[i][0].cpu()).squeeze(0)
-		y_rot=Rot_y(pred_camera_rots[i][1].cpu()).squeeze(0)
-		z_rot=Rot_z(pred_camera_rots[i][2].cpu()).squeeze(0)
+		if is_3x3:
+			x_rot=Rot_x_(pred_camera_rots[i][0].cpu()).squeeze(0)
+			y_rot=Rot_y_(pred_camera_rots[i][1].cpu()).squeeze(0)
+			z_rot=Rot_z_(pred_camera_rots[i][2].cpu()).squeeze(0)
+		else:
+			x_rot=Rot_x(pred_camera_rots[i][0].cpu()).squeeze(0)
+			y_rot=Rot_y(pred_camera_rots[i][1].cpu()).squeeze(0)
+			z_rot=Rot_z(pred_camera_rots[i][2].cpu()).squeeze(0)
 		temp_rot=z_rot.mm(y_rot)
 		temp_rot=temp_rot.mm(x_rot)
 		temp_rot=temp_rot.unsqueeze(0)
@@ -568,8 +573,8 @@ def estimate_translation(S, joints_2d, focal_length=5000., img_size=224.):
 		trans[i] = estimate_translation_np(S_i, joints_i, conf_i, focal_length=focal_length, img_size=img_size)
 	return torch.from_numpy(trans).to(device)
 
-"""
-def Rot_y(angle, category='torch', prepend_dim=True, device=None):
+
+def Rot_y_(angle, category='torch', prepend_dim=True, device=None):
 	'''Rotate around y-axis by angle
 	Args:
 		category: 'torch' or 'numpy'
@@ -599,7 +604,7 @@ def Rot_y(angle, category='torch', prepend_dim=True, device=None):
 	else:
 		raise ValueError("category must be 'torch' or 'numpy'")
 
-def Rot_x(angle, category='torch', prepend_dim=True, device=None):
+def Rot_x_(angle, category='torch', prepend_dim=True, device=None):
 	'''Rotate around x-axis by angle
 	Args:
 		category: 'torch' or 'numpy'
@@ -629,7 +634,7 @@ def Rot_x(angle, category='torch', prepend_dim=True, device=None):
 	else:
 		raise ValueError("category must be 'torch' or 'numpy'")
 
-def Rot_z(angle, category='torch', prepend_dim=True, device=None):
+def Rot_z_(angle, category='torch', prepend_dim=True, device=None):
 	'''Rotate around z-axis by angle
 	Args:
 		category: 'torch' or 'numpy'
@@ -658,7 +663,7 @@ def Rot_z(angle, category='torch', prepend_dim=True, device=None):
 			return m
 	else:
 		raise ValueError("category must be 'torch' or 'numpy'")
-"""
+
 def Rot_y(angle, category='torch', prepend_dim=True, device=None):
 	'''Rotate around y-axis by angle
 	Args:
