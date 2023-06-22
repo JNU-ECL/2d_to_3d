@@ -33,7 +33,7 @@ import torch.utils.model_zoo as model_zoo
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str ='/workspace/2d_to_3d/apps/exp585/9.pth', load_heatmap=True, load_depthmap=True, load_regressor=True):
+	def __init__(self,pretrained_path:str =None, load_heatmap=True, load_depthmap=True, load_regressor=True):
 		super().__init__()
 		load_heatmap=load_heatmap
 		load_depthmap=load_depthmap
@@ -846,7 +846,7 @@ class Regressor(nn.Module):
 			self.bilinear_layer_pose.append(block)
 
 
-		self.fc1 = nn.Linear(heatmapfeat_c + depthmapfeat_c + 128, 1024)
+		self.fc1 = nn.Linear(heatmapfeat_c + depthmapfeat_c+128*2, 1024)
 		self.bn1 = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
 		self.relu1 = nn.ReLU()
 		self.drop1 = nn.Dropout()
@@ -891,11 +891,11 @@ class Regressor(nn.Module):
 		)
 
 		
-	def forward(self, heatmap_embed, heatmap, depthmap_embed, depthmap):
+	def forward(self, heatmap_embed=None, heatmap=None, depthmap_embed=None, depthmap=None):
 		x=heatmap_embed # 256x8x8
 		x2=depthmap_embed # 256x8x8
 		x3=depthmap # 1x256x256
-		# x4=heatmap # 15x64x64
+		x4=heatmap # 15x64x64
 		# TODO : heatmap 입력 argmax로 차원당 1 하나씩
 		batch_size = x.shape[0]
 
@@ -907,27 +907,17 @@ class Regressor(nn.Module):
 		x3 = self.conv_block1(x3) #
 		x3 = self.conv_block2(x3) # -> 128
 		x3 = self.avgpool(x3) 
-		
 
-		# x4 = self.conv_block1_(x4) #
-		# x4 = self.conv_block2_(x4) # -> 128
-		# x4 = self.avgpool(x4)
-		# max_values, max_indices = torch.max(x4.view(x4.size(0), 15, -1), dim=2)
-
-		# # 1D 인덱스를 2D (x, y) 좌표로 변환합니다.
-		# y_coords = max_indices // 64
-		# x_coords = max_indices % 64
-
-		# # 결과를 (배치 크기, 15, 2) 크기의 텐서로 반환합니다.
-		# joint_coords = torch.stack((x_coords, y_coords), dim=2) / 10
-		# joint_coords = self.flatten(joint_coords)
+		x4 = self.conv_block1_(x4)
+		x4 = self.conv_block2_(x4)
+		x4 = self.avgpool(x4) 
 
 		heatmap_e_feat = x.view(batch_size,-1)
-		depth_feat = x2.view(batch_size,-1)
+		depth_e_feat = x2.view(batch_size,-1)
 		depthmap_feat = x3.view(batch_size,-1) 
-		# heatmap_feat = x4.view(batch_size,-1)
+		heatmap_feat = x4.view(batch_size,-1)
 
-		total_feat = torch.cat([heatmap_e_feat, depth_feat, depthmap_feat], 1)
+		total_feat = torch.cat([heatmap_e_feat, depth_e_feat, depthmap_feat, heatmap_feat], 1)
 
 		pred_joint = self.fc1(total_feat)
 		pred_joint = self.bn1(pred_joint)
