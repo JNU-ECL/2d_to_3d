@@ -800,7 +800,7 @@ class PoseResNet_heatmap(nn.Module):
 		temp_x = self.wasp(x)
 
 		x_heatmap = self.decoder(temp_x,low_level_feat)
-		heatmap = F.interpolate(x_heatmap, size=(64,64), mode='bilinear', align_corners=True)
+		heatmap = F.interpolate(x_heatmap, size=(47,47), mode='bilinear', align_corners=True)
 		res = {
 			'heatmap':heatmap,
 			'embed_feature':temp_x,

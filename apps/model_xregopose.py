@@ -17,19 +17,29 @@ import math
 import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
 
+from model import get_pose_net
+
 BN_MOMENTUM = 0.1
 
 class xR_egoposemodel(nn.Module):
-	def __init__(self):
+	def __init__(self,pretrained_path = None):
 		super().__init__()
 		BatchNorm = nn.BatchNorm2d
-		self.resnet101 = ResNet101(BatchNorm=BatchNorm,output_stride=8)
+		self.heatmap_module = get_pose_net('heatmap')
+		self.depthmap_module = get_pose_net('depth')
 		self.dual_branch_module = Dual_Branch()
+		if pretrained_path:
+			tempmodel_ckpt = torch.load(pretrained_path)
+			self.load_state_dict(tempmodel_ckpt)
 
 	def forward(self,x):
 		image_ = x['image']
-		x_,_ = self.resnet101(image_)
-		res_dict = self.dual_branch_module(x_)
+		depth_feat=self.depthmap_module(image_)
+		heatmap_feat=self.heatmap_module(image_)
+
+		res_dict = self.dual_branch_module(heat = heatmap_feat,depth = depth_feat)
+		res_dict['depthmap'] = depth_feat['depthmap']
+		res_dict['silhouette'] = depth_feat['silhouette']
 		return res_dict
 		
 
@@ -55,6 +65,18 @@ class Dual_Branch(nn.Module):
 		self.heat_linear = self._make_dual_linear_heat()
 		self.deconv_block = self._make_deconv_block(18432)
 		
+		self.depth_forward = nn.Sequential(
+			nn.Linear(256, 512),
+			nn.BatchNorm1d(512,momentum=BN_MOMENTUM),
+			nn.ReLU(),
+			nn.Dropout(),
+			nn.Linear(512, 512),
+			nn.BatchNorm1d(512,momentum=BN_MOMENTUM),
+			nn.ReLU(),
+			nn.Dropout(),
+			nn.Linear(512, 20),
+		)
+
 		self.conv_block_0.apply(self._weights_init)
 		self.conv_block_1.apply(self._weights_init)
 		self.conv_block_2.apply(self._weights_init)
@@ -64,21 +86,30 @@ class Dual_Branch(nn.Module):
 		self.deconv_block.apply(self._weights_init)
 
 		
-	def forward(self,x):
-		batch_size = len(x)
-		x = self.deconv_block_0(x)
-		heatmap = F.interpolate(x,size=(47,47),mode='bilinear',align_corners=True)
+	def forward(self,heat,depth):
+		h_raw = heat['heatmap']
+		h = heat['embed_feature'].detach()
+		d = depth['embed_feature'].detach()
 
-		conv_feature = self.conv_block_0(heatmap) # -> torch.Size([10, 64, 23, 23])
+		batch_size = len(h)
+		
+		conv_feature = self.conv_block_0(h_raw) # -> torch.Size([10, 64, 23, 23])
 		conv_feature = self.conv_block_1(conv_feature) # -> torch.Size([10, 128, 11, 11])
 		conv_feature = self.conv_block_2(conv_feature) 
 		conv_feature = self.avgpool(conv_feature) # -> torch.Size([10, 256, 1, 1])
-
 		conv_feature = conv_feature.view(batch_size,-1)
 
-		linear_feature = self.forward_linear(conv_feature)
+		h = self.avgpool(h)
+		h = h.view(batch_size,-1)
+		d = self.avgpool(d)
+		d = d.view(batch_size,-1)
 
-		pose = self.pose_linear(linear_feature).view(-1,16,3)
+		# total_feat = torch.cat([h], 1)
+
+		linear_feature = self.forward_linear(conv_feature)
+		depth_feature = self.depth_forward(d)
+
+		pose = self.pose_linear(linear_feature+depth_feature).view(-1,16,3)
 		
 		heat_feature = self.heat_linear(linear_feature)
 
@@ -91,7 +122,7 @@ class Dual_Branch(nn.Module):
 
 		return {
 			'pred_pose':pose,
-			'pred_1st_heatmap':heatmap,
+			'pred_1st_heatmap':h_raw,
 			'pred_2nd_heatmap':pred_2nd_heatmap,
 			'pred_normal':pred_normal,
 		}

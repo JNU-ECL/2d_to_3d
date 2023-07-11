@@ -32,3 +32,14 @@ class kp_3d_loss_(nn.Module):
 		res = None	
 		res = self.loss(x,label)
 		return res
+
+class depth_loss_(nn.Module):
+    def __init__(self, weight=None,
+                 gamma=2., reduction='mean'):
+        nn.Module.__init__(self)
+        self.loss=nn.MSELoss()
+
+    def forward(self,x,label):
+        res=None
+        res=self.loss(x,label)
+        return res
