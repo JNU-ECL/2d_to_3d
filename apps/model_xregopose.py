@@ -108,8 +108,8 @@ class Dual_Branch(nn.Module):
 
 		linear_feature = self.forward_linear(conv_feature)
 		depth_feature = self.depth_forward(d)
-
-		pose = self.pose_linear(linear_feature+depth_feature).view(-1,16,3)
+		total_feat = torch.cat([linear_feature,depth_feature],1)
+		pose = self.pose_linear(total_feat).view(-1,16,3) # TODO : concat 
 		
 		heat_feature = self.heat_linear(linear_feature)
 
@@ -160,7 +160,7 @@ class Dual_Branch(nn.Module):
 	
 	def _make_dual_linear_pose(self):
 		return nn.Sequential(
-			nn.Linear(20,32),
+			nn.Linear(40,32),
 			nn.BatchNorm1d(32,momentum=BN_MOMENTUM),
 			nn.LeakyReLU(),
 			nn.Linear(32,32),

@@ -43,3 +43,13 @@ class depth_loss_(nn.Module):
         res=None
         res=self.loss(x,label)
         return res
+    
+class silhouette_loss_(nn.Module):
+	def __init__(self) -> None:
+		nn.Module.__init__(self)
+		self.loss = nn.BCEWithLogitsLoss()
+
+	def forward(self,x,label):
+		res = None
+		res = self.loss(x,label)
+		return res
