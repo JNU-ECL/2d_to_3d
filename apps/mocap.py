@@ -134,7 +134,7 @@ class Mocap(BaseDataset):
 	
 	def _get_joint2d(self,data,resize=(256,256)):
 		p2d = data
-		p2d = torch.from_numpy(p2d).float()
+		p2d = torch.from_numpy(p2d).float() # 0~1280, 0~800
 		H,W=800,1280
 		norm_res = p2d/torch.tensor([W,H])
 		p2d = norm_res * torch.tensor(resize)
@@ -142,7 +142,7 @@ class Mocap(BaseDataset):
 	
 
 	# 가우시안 분포를 생성하는 함수
-	def generate_gaussian_heatmap(self,joint_location,image_size=[64,64], sigma=2):
+	def generate_gaussian_heatmap(self,joint_location,image_size=None, sigma=2):
 		x, y = joint_location
 		x, y = max(np.array(1),np.array(x)),max(np.array(1),np.array(y))
 		grid_y, grid_x = np.mgrid[0:image_size[1], 0:image_size[0]]
@@ -151,13 +151,13 @@ class Mocap(BaseDataset):
 		return heatmap
 	
 	# heatmap GT 생성 함수
-	def generate_heatmap_gt(self, joint_location, image_size=[64,64],sigma=2):
+	def generate_heatmap_gt(self, joint_location, image_size=None,sigma=2):
 		heatmap_gt = np.zeros((len(joint_location),image_size[1], image_size[0]), dtype=np.float32)
 		for i, joint in enumerate(joint_location):
 			heatmap_gt[i, :, :] = self.generate_gaussian_heatmap(joint, image_size, sigma)
 		return heatmap_gt
 
-	def _get_heatmap(self,data,sigma=2,resize=(47,47)):
+	def _get_heatmap(self,data,sigma=2,resize=(32,32)):
 		res=None
 		fisheye_joint_labels = self._get_joint2d(data,resize=resize)
 		res = self.generate_heatmap_gt(fisheye_joint_labels,sigma=sigma,image_size=resize)
@@ -213,6 +213,18 @@ class Mocap(BaseDataset):
 		normal = p3d_ - p3d_p
 		
 		return torch.from_numpy(normal).float()
+	
+	def _get_image_zoom(self,img_path,resize=(512,512),crop_size=(256,256)):
+		img = cv2.imread(img_path,cv2.IMREAD_COLOR)
+		img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+		transform_ = transforms.Compose([
+			transforms.ToPILImage(),
+			transforms.Resize(resize,Image.BILINEAR),
+			transforms.CenterCrop(crop_size),
+			transforms.ToTensor(),
+			transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+		])
+		return transform_(img)
 
 	def __getitem__(self, index):
 
@@ -240,6 +252,7 @@ class Mocap(BaseDataset):
 		cam = self._get_cam(data)
 		silhouette = self._get_silhouette(obj_path)
 		normal = self._get_normal(p3d_,p3d_p,Neck)
+		img_zoom = self._get_image_zoom(img_path)
 		return {
 			'info' : img_path,
 			'camera_info' : cam,
@@ -250,7 +263,8 @@ class Mocap(BaseDataset):
 			'heatmap' : heatmap, 
 			'action' : action,
 			'silhouette' : silhouette,
-			'normal':normal,
+			'normal' : normal,
+			'image_zoom' : img_zoom,
 		}
 
 	def __len__(self):
