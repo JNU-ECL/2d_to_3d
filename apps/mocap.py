@@ -163,6 +163,23 @@ class Mocap(BaseDataset):
 		res = self.generate_heatmap_gt(fisheye_joint_labels,sigma=sigma,image_size=resize)
 		return res
 
+	def _get_heatmap_zoom(self,data,sigma=2):
+			res=None
+			fisheye_joint_labels = self._get_joint2d(data,resize=(64,64))
+			res = self.generate_heatmap_gt(fisheye_joint_labels,sigma=sigma,image_size=(64,64))
+			h, w = 64,64
+			crop_size = 32
+			top = (h - crop_size) // 2
+			left = (w - crop_size) // 2
+			bottom = top + crop_size
+			right = left + crop_size
+			temp_res = res[-8:,:,:]
+			temp_res = temp_res[:,]
+			temp_res = temp_res[:, top:bottom, left:right]
+			zero_res = np.zeros((7,32,32),dtype=np.float32)
+			temp_res = np.concatenate((zero_res,temp_res),axis=0)
+			return temp_res
+
 	def _get_depth(self,depth_path,resize=(256,256)):
 		img = cv2.imread(depth_path,cv2.IMREAD_GRAYSCALE)
 		transform = transforms.Compose([
@@ -253,6 +270,7 @@ class Mocap(BaseDataset):
 		silhouette = self._get_silhouette(obj_path)
 		normal = self._get_normal(p3d_,p3d_p,Neck)
 		img_zoom = self._get_image_zoom(img_path)
+		heatmap_zoom = self._get_heatmap_zoom(p2d_)
 		return {
 			'info' : img_path,
 			'camera_info' : cam,
@@ -265,6 +283,7 @@ class Mocap(BaseDataset):
 			'silhouette' : silhouette,
 			'normal' : normal,
 			'image_zoom' : img_zoom,
+			'heatmap_zoom' : heatmap_zoom,
 		}
 
 	def __len__(self):

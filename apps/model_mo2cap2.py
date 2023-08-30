@@ -218,10 +218,10 @@ class mo2capmodel(nn.Module):
 		joint_coord_3d = self.compute_3d_joint_position(joint_coords_2d,d,beta)
 
 		res ={
-			'fully heatmap_1':supervision_1,
-			'fully heatmap_2':supervision_2,
-			'zoom heatmap_1':supervision_1_zoom,
-			'zoom heatmap_2':supervision_2_zoom,
+			'fully_heatmap_1':supervision_1,
+			'fully_heatmap_2':supervision_2,
+			'zoom_heatmap_1':supervision_1_zoom,
+			'zoom_heatmap_2':supervision_2_zoom,
 			'joint_coord_3d':joint_coord_3d,
 		}
 		return res
