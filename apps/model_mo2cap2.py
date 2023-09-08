@@ -175,6 +175,7 @@ class mo2capmodel(nn.Module):
 		)
 
 		self.get_3d_coord = nn.Linear(784,48)
+		# self.get_3d_coord = nn.Linear(528,48)
 
 
 		if pretrained_path:
@@ -267,6 +268,7 @@ class mo2capmodel(nn.Module):
 		depth_embed = depth_embed.view(batch_size,-1) # 256
 
 		total_feat = torch.cat([joint_,d,depth_embed],1).view(batch_size,-1)
+		# total_feat = torch.cat([joint_,d],1).view(batch_size,-1)
 		
 		joint_coord_3d = self.get_3d_coord(total_feat).view(batch_size,16,3)
 		
