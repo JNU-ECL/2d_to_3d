@@ -545,10 +545,13 @@ class PoseResNet_depth(nn.Module):
 		x_= self.deconv_layer5(x_) # 32+64= 96x64x64->
 		"""
 	 	# TODO : change interpolate to deconv only dep,silhouette
+		# x_dep = self.decoder(temp_x,low_level_feat)
+		# x_sil = self.decoder_(temp_x,low_level_feat)
+		# x_depthmap = self.deconv_depth(x_dep)
+		# x_silhouette  = self.deconv_sil(x_sil)
 		x_dep = self.decoder(temp_x,low_level_feat)
-		x_sil = self.decoder_(temp_x,low_level_feat)
 		x_depthmap = self.deconv_depth(x_dep)
-		x_silhouette  = self.deconv_sil(x_sil)
+		x_silhouette  = self.deconv_sil(x_dep)
 		# final bilinear interpolation to reach the original input size
 		depthmap = F.interpolate(x_depthmap, size=(256,256), mode='bilinear', align_corners=True)
 		silhouette = F.interpolate(x_silhouette, size=(256,256), mode='bilinear', align_corners=True)
