@@ -97,6 +97,7 @@ class Mocap(BaseDataset):
 
 		p2d = np.empty([len(config.skel_15), 2], dtype=p2d_orig.dtype)
 		p3d = np.empty([len(config.skel_16), 3], dtype=p2d_orig.dtype)
+		p3d_p = np.empty([len(config.skel_16), 3], dtype=p2d_orig.dtype)
 
 		for jid, j in enumerate(config.skel_15.keys()):
 			p2d[jid] = p2d_orig[joint_names[j]]
@@ -104,9 +105,14 @@ class Mocap(BaseDataset):
 		for jid, j in enumerate(config.skel_16.keys()):	
 			p3d[jid] = p3d_orig[joint_names[j]]
 
+		for jid, j_ in enumerate(config.skel_16.values()):
+			if j_['parent']:
+				p3d_p[jid] = p3d_orig[joint_names[j_['parent']]] / self.CM_TO_M
+				
+
 		p3d /= self.CM_TO_M
 		Neck = p3d_orig[joint_names['Neck']] / self.CM_TO_M
-		return p2d, p3d, Neck
+		return p2d, p3d, Neck, p3d_p
 
 	def _get_image(self,img_path,resize=(256,256)):
 		img = cv2.imread(img_path,cv2.IMREAD_COLOR)
@@ -128,7 +134,7 @@ class Mocap(BaseDataset):
 	
 	def _get_joint2d(self,data,resize=(256,256)):
 		p2d = data
-		p2d = torch.from_numpy(p2d).float()
+		p2d = torch.from_numpy(p2d).float() # 0~1280, 0~800
 		H,W=800,1280
 		norm_res = p2d/torch.tensor([W,H])
 		p2d = norm_res * torch.tensor(resize)
@@ -136,7 +142,7 @@ class Mocap(BaseDataset):
 	
 
 	# 가우시안 분포를 생성하는 함수
-	def generate_gaussian_heatmap(self,joint_location,image_size=[64,64], sigma=2):
+	def generate_gaussian_heatmap(self,joint_location,image_size=None, sigma=2):
 		x, y = joint_location
 		x, y = max(np.array(1),np.array(x)),max(np.array(1),np.array(y))
 		grid_y, grid_x = np.mgrid[0:image_size[1], 0:image_size[0]]
@@ -145,17 +151,34 @@ class Mocap(BaseDataset):
 		return heatmap
 	
 	# heatmap GT 생성 함수
-	def generate_heatmap_gt(self, joint_location, image_size=[64,64],sigma=2):
+	def generate_heatmap_gt(self, joint_location, image_size=None,sigma=2):
 		heatmap_gt = np.zeros((len(joint_location),image_size[1], image_size[0]), dtype=np.float32)
 		for i, joint in enumerate(joint_location):
 			heatmap_gt[i, :, :] = self.generate_gaussian_heatmap(joint, image_size, sigma)
 		return heatmap_gt
 
-	def _get_heatmap(self,data,sigma=2):
+	def _get_heatmap(self,data,sigma=2,resize=(32,32)):
 		res=None
-		fisheye_joint_labels = self._get_joint2d(data,resize=(64,64))
-		res = self.generate_heatmap_gt(fisheye_joint_labels,sigma=sigma)
+		fisheye_joint_labels = self._get_joint2d(data,resize=resize)
+		res = self.generate_heatmap_gt(fisheye_joint_labels,sigma=sigma,image_size=resize)
 		return res
+
+	def _get_heatmap_zoom(self,data,sigma=2):
+			res=None
+			fisheye_joint_labels = self._get_joint2d(data,resize=(64,64))
+			res = self.generate_heatmap_gt(fisheye_joint_labels,sigma=sigma,image_size=(64,64))
+			h, w = 64,64
+			crop_size = 32
+			top = (h - crop_size) // 2
+			left = (w - crop_size) // 2
+			bottom = top + crop_size
+			right = left + crop_size
+			temp_res = res[-8:,:,:]
+			temp_res = temp_res[:,]
+			temp_res = temp_res[:, top:bottom, left:right]
+			zero_res = np.zeros((7,32,32),dtype=np.float32)
+			temp_res = np.concatenate((zero_res,temp_res),axis=0)
+			return temp_res
 
 	def _get_depth(self,depth_path,resize=(256,256)):
 		img = cv2.imread(depth_path,cv2.IMREAD_GRAYSCALE)
@@ -195,6 +218,31 @@ class Mocap(BaseDataset):
 		])
 		return transform(silhouette)
 
+	def _get_normal(self,p3d_,p3d_p,Neck):
+		
+		
+		joint_zeroed = Neck[np.newaxis]
+		# update p3d
+
+		p3d_p -= joint_zeroed
+		p3d_ -= joint_zeroed
+		
+		normal = p3d_ - p3d_p
+		
+		return torch.from_numpy(normal).float()
+	
+	def _get_image_zoom(self,img_path,resize=(512,512),crop_size=(256,256)):
+		img = cv2.imread(img_path,cv2.IMREAD_COLOR)
+		img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+		transform_ = transforms.Compose([
+			transforms.ToPILImage(),
+			transforms.Resize(resize,Image.BILINEAR),
+			transforms.CenterCrop(crop_size),
+			transforms.ToTensor(),
+			transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+		])
+		return transform_(img)
+
 	def __getitem__(self, index):
 
 		# load image
@@ -205,7 +253,7 @@ class Mocap(BaseDataset):
 		# read joint positions
 		json_path = self.index['json'][index].decode('utf8')
 		data = io.read_json(json_path)
-		p2d_, p3d_, Neck = self._process_points(data) 
+		p2d_, p3d_, Neck, p3d_p = self._process_points(data) 
 
 		depth_path = self.index['depth'][index].decode('utf8')
 
@@ -220,7 +268,9 @@ class Mocap(BaseDataset):
 		heatmap = self._get_heatmap(p2d_)
 		cam = self._get_cam(data)
 		silhouette = self._get_silhouette(obj_path)
-
+		normal = self._get_normal(p3d_,p3d_p,Neck)
+		img_zoom = self._get_image_zoom(img_path)
+		heatmap_zoom = self._get_heatmap_zoom(p2d_)
 		return {
 			'info' : img_path,
 			'camera_info' : cam,
@@ -231,6 +281,9 @@ class Mocap(BaseDataset):
 			'heatmap' : heatmap, 
 			'action' : action,
 			'silhouette' : silhouette,
+			'normal' : normal,
+			'image_zoom' : img_zoom,
+			'heatmap_zoom' : heatmap_zoom,
 		}
 
 	def __len__(self):
