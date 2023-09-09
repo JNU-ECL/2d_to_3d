@@ -33,7 +33,7 @@ import torch.utils.model_zoo as model_zoo
 
 
 class TempModel(nn.Module):
-	def __init__(self,pretrained_path:str ='/workspace/2d_to_3d/apps/exp585/9.pth', load_heatmap=True, load_depthmap=True, load_regressor=True):
+	def __init__(self,pretrained_path:str =None, load_heatmap=True, load_depthmap=True, load_regressor=True):
 		super().__init__()
 		load_heatmap=load_heatmap
 		load_depthmap=load_depthmap
@@ -72,7 +72,7 @@ class TempModel(nn.Module):
 								depthmap_state_dict[new_key] = v
 						self.depthmap_module.load_state_dict(depthmap_state_dict)
 				
-	def forward(self, x,epoch,is_train):
+	def forward(self, x):
 		res = {}
 		image_ = x['image']
 	
@@ -80,27 +80,13 @@ class TempModel(nn.Module):
 		depth_feat=self.depthmap_module(image_)
 		heatmap_feat=self.heatmap_module(image_)
 
-		if is_train:
-			depth_ = x['depth']
-			heatmap_ = x['heatmap']
-			regressor_res_dict=self.regressor(
-				# heatmap_feat['embed_feature'],
-				# heatmap_,
-				# depth_feat['embed_feature'],
-				# depth_,
-				heatmap_feat['embed_feature'],
-				heatmap_feat['heatmap'],
-				depth_feat['embed_feature'],
-				depth_feat['depthmap'],
-			)
-		else:
-		
-			regressor_res_dict=self.regressor(
+		regressor_res_dict=self.regressor(
 			heatmap_feat['embed_feature'],
 			heatmap_feat['heatmap'],
 			depth_feat['embed_feature'],
 			depth_feat['depthmap'],
-			)
+		)
+
 
 
 
@@ -230,47 +216,7 @@ class Bottleneck(nn.Module):
 
         return out
 
-"""
-class Bottleneck(nn.Module):
-	expansion = 4
 
-	def __init__(self, inplanes, planes, stride=1, downsample=None):
-		super(Bottleneck, self).__init__()
-		self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
-		self.bn1 = nn.BatchNorm2d(planes, momentum=BN_MOMENTUM)
-		self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
-							   padding=1, bias=False)
-		self.bn2 = nn.BatchNorm2d(planes, momentum=BN_MOMENTUM)
-		self.conv3 = nn.Conv2d(planes, planes * self.expansion, kernel_size=1,
-							   bias=False)
-		self.bn3 = nn.BatchNorm2d(planes * self.expansion,
-								  momentum=BN_MOMENTUM)
-		self.relu = nn.ReLU(inplace=True)
-		self.downsample = downsample
-		self.stride = stride
-
-	def forward(self, x):
-		residual = x
-
-		out = self.conv1(x)
-		out = self.bn1(out)
-		out = self.relu(out)
-
-		out = self.conv2(out)
-		out = self.bn2(out)
-		out = self.relu(out)
-
-		out = self.conv3(out)
-		out = self.bn3(out)
-
-		if self.downsample is not None:
-			residual = self.downsample(x)
-
-		out += residual
-		out = self.relu(out)
-
-		return out
-"""
 class Decoder(nn.Module):
 	def __init__(self, outplanes, resnet):
 		super(Decoder, self).__init__()
@@ -281,8 +227,6 @@ class Decoder(nn.Module):
 		self.bn1 = nn.BatchNorm2d(48)
 		self.relu = nn.ReLU()
 		self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-		# self.conv2 = nn.Conv2d(2048, 256, 1, bias=False)
-		# self.bn2 = BatchNorm(256)
 		self.last_conv = nn.Sequential(nn.Conv2d(304, 256, kernel_size=3, stride=1, padding=1, bias=False),
 										nn.BatchNorm2d(256),
 										nn.ReLU(),
@@ -448,6 +392,7 @@ class PoseResNet_depth(nn.Module):
 
 		self.wasp = WASP()
 		self.decoder = Decoder(1,'depth')
+		self.decoder_ = Decoder(1,'depth')
 
 		blocks = [1, 2, 4]
 		if self.output_stride == 16:
@@ -482,22 +427,6 @@ class PoseResNet_depth(nn.Module):
 			nn.ConvTranspose2d(32, 1, kernel_size=4, stride=2, padding=1),
 			nn.Sigmoid(),
 		)
-		# self.deconv_layer1 = self._make_deconv_layer(512,256)
-		# self.deconv_layer2 = self._make_deconv_layer(256,128)
-		# self.deconv_layer3 = self._make_deconv_layer(128,64)
-		# self.deconv_layer4 = self._make_deconv_layer(64,32)
-		# self.deconv_layer5 = nn.Sequential(
-		# 	nn.ConvTranspose2d(
-		# 		in_channels=32,
-		# 		out_channels=1,
-		# 		kernel_size=4,
-		# 		stride=2,
-		# 		padding=1,
-		# 		bias=self.deconv_with_bias
-		# 					   ),
-		# 	nn.BatchNorm2d(1, momentum=BN_MOMENTUM),
-		# 	nn.Sigmoid(),
-		# 	)
 
 		
 		self._init_weight()
@@ -616,9 +545,10 @@ class PoseResNet_depth(nn.Module):
 		x_= self.deconv_layer5(x_) # 32+64= 96x64x64->
 		"""
 	 	# TODO : change interpolate to deconv only dep,silhouette
-		x_ = self.decoder(temp_x,low_level_feat)
-		x_depthmap = self.deconv_depth(x_)
-		x_silhouette  = self.deconv_sil(x_)
+		x_dep = self.decoder(temp_x,low_level_feat)
+		x_sil = self.decoder_(temp_x,low_level_feat)
+		x_depthmap = self.deconv_depth(x_dep)
+		x_silhouette  = self.deconv_sil(x_sil)
 		# final bilinear interpolation to reach the original input size
 		depthmap = F.interpolate(x_depthmap, size=(256,256), mode='bilinear', align_corners=True)
 		silhouette = F.interpolate(x_silhouette, size=(256,256), mode='bilinear', align_corners=True)
@@ -938,6 +868,7 @@ class Regressor(nn.Module):
 		for layer in self.bilinear_layer_pose:
 			pred_joint = layer(pred_joint)
 			pred_joint += pose_residual
+			# pose_residual = pred_joint
 
 
 		pred_joint = self.decjoint(pred_joint).view(-1,16,3)
