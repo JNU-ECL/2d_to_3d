@@ -92,6 +92,7 @@ class TempModel(nn.Module):
 
 		res.update({
    	  		'regressor_dict' : regressor_res_dict,
+			'pred_pose' : regressor_res_dict['pred_joint'],
 	 		'depthmap' : depth_feat['depthmap'],
 			'silhouette' : depth_feat['silhouette'],
 	 		'heatmap' : heatmap_feat['heatmap'],
@@ -545,13 +546,13 @@ class PoseResNet_depth(nn.Module):
 		x_= self.deconv_layer5(x_) # 32+64= 96x64x64->
 		"""
 	 	# TODO : change interpolate to deconv only dep,silhouette
-		# x_dep = self.decoder(temp_x,low_level_feat)
-		# x_sil = self.decoder_(temp_x,low_level_feat)
-		# x_depthmap = self.deconv_depth(x_dep)
-		# x_silhouette  = self.deconv_sil(x_sil)
 		x_dep = self.decoder(temp_x,low_level_feat)
+		x_sil = self.decoder_(temp_x,low_level_feat)
 		x_depthmap = self.deconv_depth(x_dep)
-		x_silhouette  = self.deconv_sil(x_dep)
+		x_silhouette  = self.deconv_sil(x_sil)
+		# x_dep = self.decoder(temp_x,low_level_feat)
+		x_depthmap = self.deconv_depth(x_dep)
+		x_silhouette  = self.deconv_sil(x_sil)
 		# final bilinear interpolation to reach the original input size
 		depthmap = F.interpolate(x_depthmap, size=(256,256), mode='bilinear', align_corners=True)
 		silhouette = F.interpolate(x_silhouette, size=(256,256), mode='bilinear', align_corners=True)
@@ -779,7 +780,7 @@ class Regressor(nn.Module):
 			self.bilinear_layer_pose.append(block)
 
 
-		self.fc1 = nn.Linear(heatmapfeat_c + depthmapfeat_c+128*2, 1024)
+		self.fc1 = nn.Linear(heatmapfeat_c + depthmapfeat_c+128, 1024)
 		self.bn1 = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
 		self.relu1 = nn.ReLU()
 		self.drop1 = nn.Dropout()
@@ -841,16 +842,16 @@ class Regressor(nn.Module):
 		x3 = self.conv_block2(x3) # -> 128
 		x3 = self.avgpool(x3) 
 
-		x4 = self.conv_block1_(x4)
-		x4 = self.conv_block2_(x4)
-		x4 = self.avgpool(x4) 
+		# x4 = self.conv_block1_(x4)
+		# x4 = self.conv_block2_(x4)
+		# x4 = self.avgpool(x4) 
 
 		heatmap_e_feat = x.view(batch_size,-1)
 		depth_e_feat = x2.view(batch_size,-1)
 		depthmap_feat = x3.view(batch_size,-1) 
-		heatmap_feat = x4.view(batch_size,-1)
+		# heatmap_feat = x4.view(batch_size,-1)
 
-		total_feat = torch.cat([heatmap_e_feat, depth_e_feat, depthmap_feat, heatmap_feat], 1)
+		total_feat = torch.cat([heatmap_e_feat, depth_e_feat, depthmap_feat], 1)
 
 		pred_joint = self.fc1(total_feat)
 		pred_joint = self.bn1(pred_joint)
