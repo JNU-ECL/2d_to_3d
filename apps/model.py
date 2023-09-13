@@ -237,7 +237,7 @@ class Decoder(nn.Module):
 										nn.ReLU(),
 										nn.Dropout(0.1),
 										nn.Conv2d(256, outplanes, kernel_size=1, stride=1),
-										nn.Sigmoid(),
+										nn.Sigmoid()
 										)
 		self.last_deconv = nn.Sequential(nn.ConvTranspose2d(304, 128, kernel_size=4, stride=2, padding=1),
 									nn.BatchNorm2d(128),
@@ -317,8 +317,8 @@ class WASP(nn.Module):
 		self.output_stride = 16
 		inplanes = 2048 #resnet34:512, resnet50:2048
 		if self.output_stride == 16:
-			#dilations = [ 6, 12, 18, 24]
-			dilations = [24, 18, 12,  6]
+			dilations = [ 6, 12, 18, 24]
+			# dilations = [24, 18, 12,  6]
 			#dilations = [6, 6, 6, 6]
 		elif self.output_stride == 8:
 			dilations = [48, 36, 24, 12]
@@ -546,13 +546,12 @@ class PoseResNet_depth(nn.Module):
 		x_= self.deconv_layer5(x_) # 32+64= 96x64x64->
 		"""
 	 	# TODO : change interpolate to deconv only dep,silhouette
-		x_dep = self.decoder(temp_x,low_level_feat)
-		x_sil = self.decoder_(temp_x,low_level_feat)
-		x_depthmap = self.deconv_depth(x_dep)
-		x_silhouette  = self.deconv_sil(x_sil)
+		x_ = self.decoder(temp_x,low_level_feat)
+		# x_sil = self.decoder_(temp_x,low_level_feat)
+		x_depthmap = self.deconv_depth(x_)
+		x_silhouette  = self.deconv_sil(x_)
 		# x_dep = self.decoder(temp_x,low_level_feat)
-		x_depthmap = self.deconv_depth(x_dep)
-		x_silhouette  = self.deconv_sil(x_sil)
+
 		# final bilinear interpolation to reach the original input size
 		depthmap = F.interpolate(x_depthmap, size=(256,256), mode='bilinear', align_corners=True)
 		silhouette = F.interpolate(x_silhouette, size=(256,256), mode='bilinear', align_corners=True)
@@ -734,7 +733,7 @@ class PoseResNet_heatmap(nn.Module):
 		temp_x = self.wasp(x)
 
 		x_heatmap = self.decoder(temp_x,low_level_feat)
-		heatmap = F.interpolate(x_heatmap, size=(47,47), mode='bilinear', align_corners=True)
+		heatmap = F.interpolate(x_heatmap, size=(64,64), mode='bilinear', align_corners=True)
 		res = {
 			'heatmap':heatmap,
 			'embed_feature':temp_x,

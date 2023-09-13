@@ -157,7 +157,7 @@ class Mocap(BaseDataset):
 			heatmap_gt[i, :, :] = self.generate_gaussian_heatmap(joint, image_size, sigma)
 		return heatmap_gt
 
-	def _get_heatmap(self,data,sigma=2,resize=(32,32)):
+	def _get_heatmap(self,data,sigma=2,resize=(64,64)):
 		res=None
 		fisheye_joint_labels = self._get_joint2d(data,resize=resize)
 		res = self.generate_heatmap_gt(fisheye_joint_labels,sigma=sigma,image_size=resize)
