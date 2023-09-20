@@ -263,12 +263,14 @@ class mo2capmodel(nn.Module):
 		d = self.relu(d)
 		joint_ = self.coord_linear(joint_coords_2d)
 
-		depth_embed = depth['embed_feature'].detach()
-		depth_embed = self.avgpool(depth_embed)
-		depth_embed = depth_embed.view(batch_size,-1) # 256
+		if depth is not None:
+			depth_embed = depth['embed_feature'].detach()
+			depth_embed = self.avgpool(depth_embed)
+			depth_embed = depth_embed.view(batch_size,-1) # 256
 
-		total_feat = torch.cat([joint_,d,depth_embed],1).view(batch_size,-1)
-		# total_feat = torch.cat([joint_,d],1).view(batch_size,-1)
+			total_feat = torch.cat([joint_,d,depth_embed],1).view(batch_size,-1)
+		else:
+			total_feat = torch.cat([joint_,d],1).view(batch_size,-1)
 		
 		joint_coord_3d = self.get_3d_coord(total_feat).view(batch_size,16,3)
 		

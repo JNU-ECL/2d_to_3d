@@ -339,6 +339,7 @@ class WASP(nn.Module):
 		self.bn1 = nn.BatchNorm2d(256)
 		self.relu = nn.ReLU()
 		self.dropout = nn.Dropout(0.5)
+		
 		self._init_weight()
 
 	def _init_weight(self):
@@ -393,7 +394,7 @@ class PoseResNet_depth(nn.Module):
 
 		self.wasp = WASP()
 		self.decoder = Decoder(1,'depth')
-		self.decoder_ = Decoder(1,'depth')
+		self.decoder_ = Decoder(1,'depth') # if sep decoder state is on remove #
 
 		blocks = [1, 2, 4]
 		if self.output_stride == 16:
@@ -547,7 +548,7 @@ class PoseResNet_depth(nn.Module):
 		"""
 	 	# TODO : change interpolate to deconv only dep,silhouette
 		x_ = self.decoder(temp_x,low_level_feat)
-		# x_sil = self.decoder_(temp_x,low_level_feat)
+		x_sil = self.decoder_(temp_x,low_level_feat)
 		x_depthmap = self.deconv_depth(x_)
 		x_silhouette  = self.deconv_sil(x_)
 		# x_dep = self.decoder(temp_x,low_level_feat)

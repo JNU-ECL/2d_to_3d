@@ -27,6 +27,7 @@ class xR_egoposemodel(nn.Module):
 		BatchNorm = nn.BatchNorm2d
 		self.heatmap_module = get_pose_net('heatmap')
 		self.depthmap_module = get_pose_net('depth')
+		# self.resnet101 = ResNet101(BatchNorm=BatchNorm,output_stride=8)
 		self.dual_branch_module = Dual_Branch()
 		if pretrained_path:
 			tempmodel_ckpt = torch.load(pretrained_path)
@@ -36,9 +37,12 @@ class xR_egoposemodel(nn.Module):
 		image_ = x['image']
 		depth_feat=self.depthmap_module(image_)
 		heatmap_feat=self.heatmap_module(image_)
+		# x_,_ = self.resnet101(image_)
+		# res_dict = self.dual_branch_module(x_)
 
 		res_dict = self.dual_branch_module(heat = heatmap_feat,depth = depth_feat)
 		res_dict['depthmap'] = depth_feat['depthmap']
+		res_dict['heatmap'] = heatmap_feat['heatmap']
 		res_dict['silhouette'] = depth_feat['silhouette']
 		return res_dict
 		
@@ -86,29 +90,44 @@ class Dual_Branch(nn.Module):
 		self.deconv_block.apply(self._weights_init)
 
 		
-	def forward(self,heat,depth):
-		h_raw = heat['heatmap']
-		h = heat['embed_feature'].detach()
-		d = depth['embed_feature'].detach()
+	def forward(self,image = None, heat = None, depth = None):
+		if (heat and depth) is not None:
+			h_raw = heat['heatmap']
+			h = heat['embed_feature'].detach()
+			d = depth['embed_feature'].detach()
 
-		batch_size = len(h)
+			batch_size = len(h)
+			conv_feature = self.conv_block_0(h_raw) # -> torch.Size([10, 64, 23, 23])
+		else:
+			x = image
+			batch_size = len(x)
+			x = self.deconv_block_0(x)
+			heatmap = F.interpolate(x,size=(47,47),mode='bilinear',align_corners=True)
+
+			conv_feature = self.conv_block_0(heatmap)
 		
-		conv_feature = self.conv_block_0(h_raw) # -> torch.Size([10, 64, 23, 23])
+		
 		conv_feature = self.conv_block_1(conv_feature) # -> torch.Size([10, 128, 11, 11])
 		conv_feature = self.conv_block_2(conv_feature) 
 		conv_feature = self.avgpool(conv_feature) # -> torch.Size([10, 256, 1, 1])
 		conv_feature = conv_feature.view(batch_size,-1)
 
-		h = self.avgpool(h)
-		h = h.view(batch_size,-1)
-		d = self.avgpool(d)
-		d = d.view(batch_size,-1)
+		if (heat and depth) is not None:
+			h = self.avgpool(h)
+			h = h.view(batch_size,-1)
+			d = self.avgpool(d)
+			d = d.view(batch_size,-1)
+			depth_feature = self.depth_forward(d)
 
 		# total_feat = torch.cat([h], 1)
 
 		linear_feature = self.forward_linear(conv_feature)
-		depth_feature = self.depth_forward(d)
-		total_feat = torch.cat([linear_feature,depth_feature],1)
+	
+		if (heat and depth) is not None:
+			total_feat = torch.cat([linear_feature,depth_feature],1)
+			# total_feat = linear_feature+depth_feature
+		else:
+			total_feat = torch.cat([linear_feature],1)
 		pose = self.pose_linear(total_feat).view(-1,16,3) # TODO : concat 
 		
 		heat_feature = self.heat_linear(linear_feature)
@@ -120,12 +139,24 @@ class Dual_Branch(nn.Module):
 		
 		pred_normal = self._get_normal(pose)
 
-		return {
+		res = {}
+
+		if (heat and depth) is not None:
+			res.update({
 			'pred_pose':pose,
 			'pred_1st_heatmap':h_raw,
 			'pred_2nd_heatmap':pred_2nd_heatmap,
 			'pred_normal':pred_normal,
-		}
+			})
+		else:
+			res.update({
+			'pred_pose':pose,
+			'pred_1st_heatmap':heatmap,
+			'pred_2nd_heatmap':pred_2nd_heatmap,
+			'pred_normal':pred_normal,
+			})
+
+		return res
 
 	def _weights_init(self, m):
 		if isinstance(m, nn.Conv2d):
