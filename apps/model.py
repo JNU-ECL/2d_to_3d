@@ -83,8 +83,8 @@ class TempModel(nn.Module):
 		regressor_res_dict=self.regressor(
 			heatmap_feat['embed_feature'],
 			heatmap_feat['heatmap'],
-			depth_feat['embed_feature'],
-			depth_feat['depthmap'],
+			depth_feat['embed_feature'].detach(),
+			depth_feat['depthmap'].detach(),
 		)
 
 
@@ -418,7 +418,7 @@ class PoseResNet_depth(nn.Module):
 		self.layer3 = self._make_layer(block, 256, layers[2], stride=strides[2], dilation=dilations[2], BatchNorm=BatchNorm)
 		self.layer4 = self._make_MG_unit(block, 512, blocks=blocks, stride=strides[3], dilation=dilations[3], BatchNorm=BatchNorm)
 
-
+		
 
 		self.deconv_depth = nn.Sequential(
 			nn.ConvTranspose2d(32, 1, kernel_size=4, stride=2, padding=1),
@@ -430,24 +430,25 @@ class PoseResNet_depth(nn.Module):
 			# nn.Sigmoid(),
 		)
 
-		
+		self.with_out_wasp = nn.Conv2d(2048,256,3)
+
 		self._init_weight()
 		if self.pretrained:
 			self._load_pretrained_model()
 
-	def _load_pretrained_model(self):
-		#pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth')
-		pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet34-333f7ec4.pth')
-		# pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet50-19c8e357.pth')
-		# pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet101-5d3b4d8f.pth')
+	# def _load_pretrained_model(self):
+	# 	#pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth')
+	# 	pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet34-333f7ec4.pth')
+	# 	# pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet50-19c8e357.pth')
+	# 	# pretrain_dict = model_zoo.load_url('https://download.pytorch.org/models/resnet101-5d3b4d8f.pth')
 		
-		model_dict = {}
-		state_dict = self.state_dict()
-		for k, v in pretrain_dict.items():
-			if k in state_dict:
-				model_dict[k] = v
-		state_dict.update(model_dict)
-		self.load_state_dict(state_dict)
+	# 	model_dict = {}
+	# 	state_dict = self.state_dict()
+	# 	for k, v in pretrain_dict.items():
+	# 		if k in state_dict:
+	# 			model_dict[k] = v
+	# 	state_dict.update(model_dict)
+	# 	self.load_state_dict(state_dict)
 
 	def _init_weight(self):
 		for m in self.modules():
@@ -538,6 +539,7 @@ class PoseResNet_depth(nn.Module):
 		x_2 = self.layer3(x_1) # ->1024x16x16
 		x = self.layer4(x_2) # ->2048x16x16
 
+		# temp_x = self.with_out_wasp(x)
 		temp_x = self.wasp(x) # -> 256x16x16
 		"""
 		x_= self.deconv_layer1(x_) #->128x16x16
@@ -638,6 +640,7 @@ class PoseResNet_heatmap(nn.Module):
 			nn.ReLU(inplace=True),
 			)
 		"""
+		self.with_out_wasp = nn.Conv2d(2048,256,3)
 		self._init_weight()
 		if self.pretrained:
 			self._load_pretrained_model()
@@ -731,7 +734,8 @@ class PoseResNet_heatmap(nn.Module):
 		x_2 = self.layer3(x_1) # -> 256x16x16
 		x = self.layer4(x_2) # -> 512x8x8
 
-		temp_x = self.wasp(x)
+		temp_x = self.with_out_wasp(x)
+		# temp_x = self.wasp(x)
 
 		x_heatmap = self.decoder(temp_x,low_level_feat)
 		heatmap = F.interpolate(x_heatmap, size=(64,64), mode='bilinear', align_corners=True)
