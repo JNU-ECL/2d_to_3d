@@ -317,7 +317,7 @@ class WASP(nn.Module):
 		self.output_stride = 16
 		inplanes = 2048 #resnet34:512, resnet50:2048
 		if self.output_stride == 16:
-			dilations = [ 6, 12, 18, 24]
+			dilations = [ 1,2,3,4]
 			# dilations = [24, 18, 12,  6]
 			#dilations = [6, 6, 6, 6]
 		elif self.output_stride == 8:
