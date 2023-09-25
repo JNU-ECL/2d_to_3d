@@ -83,8 +83,8 @@ class TempModel(nn.Module):
 		regressor_res_dict=self.regressor(
 			heatmap_feat['embed_feature'],
 			heatmap_feat['heatmap'],
-			depth_feat['embed_feature'].detach(),
-			depth_feat['depthmap'].detach(),
+			depth_feat['embed_feature'],
+			depth_feat['depthmap'],
 		)
 
 
@@ -324,7 +324,7 @@ class WASP(nn.Module):
 			dilations = [48, 36, 24, 12]
 
 
-		self.aspp1 = _AtrousModule(inplanes, 256, 1, padding=0, dilation=dilations[0])
+		self.aspp1 = _AtrousModule(inplanes, 256, 3, padding=0, dilation=dilations[0])
 		self.aspp2 = _AtrousModule(256, 256, 3, padding=dilations[1], dilation=dilations[1])
 		self.aspp3 = _AtrousModule(256, 256, 3, padding=dilations[2], dilation=dilations[2])
 		self.aspp4 = _AtrousModule(256, 256, 3, padding=dilations[3], dilation=dilations[3])
