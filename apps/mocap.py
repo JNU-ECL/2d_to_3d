@@ -195,15 +195,18 @@ class Mocap(BaseDataset):
 		rot = torch.tensor(data['camera']['rot']) * np.pi / 180.0
 		return trans, rot
 
-	def _get_silhouette(self,img_path,resize=(256,256)):
+	def _get_silhouette(self,img_path,depth_path,resize=(256,256)):
 		img = cv2.imread(img_path,cv2.IMREAD_COLOR)
-		img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+		img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) # 800x1280x3
+		
+		img_d = cv2.imread(depth_path,cv2.IMREAD_GRAYSCALE) # 800x1280
+		# temp_shape = (img.shape[0],img.shape[1],2)
+		masks = np.zeros_like(img[:,:,0])
+		cam_outside = (img_d == 0)
+		silhouette = np.any(img != [0, 0, 0], axis=-1)
 
-		silhouette = np.zeros_like(img[:,:,0])
-	
-		not_black = np.any(img != [0, 0, 0], axis=-1)
-
-		silhouette[not_black] = 255
+		masks[cam_outside] = 1
+		masks[silhouette] = 2 # backgorund = 0, cam_out = 1, sil = 2
 
 		# h,w,c = img.shape
 		# c_h,c_w = h//2,w//2
@@ -211,12 +214,34 @@ class Mocap(BaseDataset):
 		# mask = np.zeros_like(img)
 		# cv2.circle(mask, (c_w,c_h), radius, (255, 255, 255), -1)
 		# cropped_img = cv2.bitwise_and(img, mask)
-		transform = transforms.Compose([
-			transforms.ToPILImage(),
-			transforms.Resize(resize, Image.BILINEAR),
-			transforms.ToTensor(),
-		])
-		return transform(silhouette)
+
+		masks_resized = cv2.resize(masks, resize, interpolation=cv2.INTER_NEAREST)
+		masks_tensor = torch.tensor(masks_resized, dtype=torch.long)
+		return masks_tensor
+	
+	# def _get_silhouette(self,img_path,resize=(256,256)):
+	# 	img = cv2.imread(img_path,cv2.IMREAD_COLOR)
+	# 	img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+	# 	silhouette = np.zeros_like(img[:,:,0])
+	
+	# 	not_black = np.any(img != [0, 0, 0], axis=-1)
+
+	# 	silhouette[not_black] = 255
+
+	# 	# h,w,c = img.shape
+	# 	# c_h,c_w = h//2,w//2
+	# 	# radius = min(c_h,c_w) + 100
+	# 	# mask = np.zeros_like(img)
+	# 	# cv2.circle(mask, (c_w,c_h), radius, (255, 255, 255), -1)
+	# 	# cropped_img = cv2.bitwise_and(img, mask)
+	# 	transform = transforms.Compose([
+	# 		transforms.ToPILImage(),
+	# 		transforms.Resize(resize, Image.BILINEAR),
+	# 		transforms.ToTensor(),
+	# 	])
+	# 	return transform(silhouette)
+	
 
 	def _get_normal(self,p3d_,p3d_p,Neck):
 		
@@ -267,7 +292,8 @@ class Mocap(BaseDataset):
 		depth = self._get_depth(depth_path)
 		heatmap = self._get_heatmap(p2d_)
 		cam = self._get_cam(data)
-		silhouette = self._get_silhouette(obj_path)
+		silhouette = self._get_silhouette(obj_path,depth_path)
+		# silhouette = self._get_silhouette(obj_path)
 		normal = self._get_normal(p3d_,p3d_p,Neck)
 		img_zoom = self._get_image_zoom(img_path)
 		heatmap_zoom = self._get_heatmap_zoom(p2d_)

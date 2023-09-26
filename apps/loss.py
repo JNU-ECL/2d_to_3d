@@ -182,14 +182,15 @@ class heatmap_proj_loss(nn.Module):
         return res
     
 class silhouette_loss(nn.Module):
-    def __init__(self) -> None:
-        nn.Module.__init__(self)
-        self.loss=nn.BCEWithLogitsLoss()
-    
-    def forward(self,x,label):
-        res=None
-        res=self.loss(x,label)
-        return res
+	def __init__(self) -> None:
+		nn.Module.__init__(self)
+		self.loss=nn.CrossEntropyLoss()
+		# self.loss=nn.BCEWithLogitsLoss()
+
+	def forward(self,x,label):
+		res=None
+		res=self.loss(x,label)
+		return res
 
 _criterion_entrypoints = {
     'depth_criterion' : depth_loss,
