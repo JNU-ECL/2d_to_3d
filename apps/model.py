@@ -324,7 +324,7 @@ class WASP(nn.Module):
 			dilations = [48, 36, 24, 12]
 
 
-		self.aspp1 = _AtrousModule(inplanes, 256, 3, padding=0, dilation=dilations[0])
+		self.aspp1 = _AtrousModule(inplanes, 256, 1, padding=0, dilation=dilations[0])
 		self.aspp2 = _AtrousModule(256, 256, 3, padding=dilations[1], dilation=dilations[1])
 		self.aspp3 = _AtrousModule(256, 256, 3, padding=dilations[2], dilation=dilations[2])
 		self.aspp4 = _AtrousModule(256, 256, 3, padding=dilations[3], dilation=dilations[3])
@@ -394,7 +394,7 @@ class PoseResNet_depth(nn.Module):
 
 		self.wasp = WASP()
 		self.decoder = Decoder(1,'depth')
-		# self.decoder_ = Decoder(1,'depth') # if sep decoder state is on remove #
+		self.decoder_ = Decoder(1,'depth') # if sep decoder state is on remove #
 
 		blocks = [1, 2, 4]
 		if self.output_stride == 16:
@@ -426,11 +426,11 @@ class PoseResNet_depth(nn.Module):
 		)
 
 		self.deconv_sil = nn.Sequential(
-			nn.ConvTranspose2d(32, 3, kernel_size=4, stride=2, padding=1),
+			nn.ConvTranspose2d(32, 1, kernel_size=4, stride=2, padding=1),
 			# nn.Sigmoid(),
 		)
 
-		# self.with_out_wasp = nn.Conv2d(2048,256,3)
+		self.with_out_wasp = nn.Conv2d(2048,256,3)
 
 		self._init_weight()
 		if self.pretrained:
@@ -539,8 +539,8 @@ class PoseResNet_depth(nn.Module):
 		x_2 = self.layer3(x_1) # ->1024x16x16
 		x = self.layer4(x_2) # ->2048x16x16
 
-		# temp_x = self.with_out_wasp(x)
-		temp_x = self.wasp(x) # -> 256x16x16
+		temp_x = self.with_out_wasp(x)
+		# temp_x = self.wasp(x) # -> 256x16x16
 		"""
 		x_= self.deconv_layer1(x_) #->128x16x16
 		x_= self.deconv_layer2(x_) #->64x32x32

@@ -14,20 +14,23 @@ class Ours_model(nn.Module):
 		self.with_out_wasp_h = nn.Conv2d(2048,256,3)
 		self.heatmap_decoder = Decoder('heat')
 		
-		# self.depthmap_backbone = ResNet50()
-		# # self.depthmap_WASP = WASP()
-		# self.with_out_wasp_d = nn.Conv2d(2048,256,3)
-		# self.depthmap_decoder = Decoder('depth')
-		# self.deconv_depth = nn.Sequential(
-		# 	nn.ConvTranspose2d(32, 1,  kernel_size=4, stride=2, padding=1),
-		# 	nn.Sigmoid(),
-		# )
-		# self.deconv_sil = nn.ConvTranspose2d(32, 3,  kernel_size=4, stride=2, padding=1)
-
-	
+		self.depthmap_backbone = ResNet50()
+		# self.depthmap_WASP = WASP()
+		self.with_out_wasp_d = nn.Conv2d(2048,256,3)
+		
+		self.depthmap_decoder = Decoder('depth')
+		
+		self.deconv_depth = nn.Sequential(
+			nn.ConvTranspose2d(32, 1,  kernel_size=4, stride=2, padding=1),
+			nn.Sigmoid(),
+		)
+		self.deconv_sil = nn.ConvTranspose2d(32, 3,  kernel_size=4, stride=2, padding=1)
+		
+		self.seg_decoder = Decoder('depth')
+		self.with_out_wasp_s = nn.Conv2d(2048,256,3)
 
 		
-		self.Regressor = Regressor(256,0)
+		self.Regressor = Regressor(256,256)
 		if pretrained_path:
 			tempmodel_ckpt = torch.load(pretrained_path)
 			self.load_state_dict(tempmodel_ckpt)
@@ -43,29 +46,34 @@ class Ours_model(nn.Module):
 		heat_x = self.heatmap_decoder(heat_x,heat_low)
 		heatmap = F.interpolate(heat_x, size=(64,64), mode='bilinear', align_corners=True)
 
-		# depth_x,depth_low = self.depthmap_backbone(input_)
-		# # depth_x = self.depthmap_WASP(depth_x)
-		# depth_x = self.with_out_wasp_d(depth_x)
-		# depth_embed = depth_x
-		# depth_x = self.depthmap_decoder(depth_x,depth_low)
-		# depthmap = self.deconv_depth(depth_x)
-		# silhouette = self.deconv_sil(depth_x)
+		depth_x,depth_low = self.depthmap_backbone(input_)
+		# depth_x = self.depthmap_WASP(depth_x)
+		seg_x = self.with_out_wasp_s(depth_x)
+		depth_x = self.with_out_wasp_d(depth_x)
+		seg_embed = seg_x
+		depth_embed = depth_x
+		seg_x = self.seg_decoder(seg_x,depth_low)
+		depth_x = self.depthmap_decoder(depth_x,depth_low)
+		
+		depthmap = self.deconv_depth(depth_x)
+		silhouette = self.deconv_sil(seg_x)
 
-		# depthmap = F.interpolate(depthmap, size=(256,256), mode='bilinear', align_corners=True)
-		# silhouette = F.interpolate(silhouette, size=(256,256), mode='bilinear', align_corners=True)
+		depthmap = F.interpolate(depthmap, size=(256,256), mode='bilinear', align_corners=True)
+		silhouette = F.interpolate(silhouette, size=(256,256), mode='bilinear', align_corners=True)
 
 		reg_dict = self.Regressor(
-			heatmap_embed=heat_embed, 
-			heatmap=None, 
-			# depthmap_embed=depth_embed, 
-			# depthmap=depthmap
+			heatmap_embed = heat_embed, 
+			heatmap = None, 
+			depthmap_embed = depth_embed, 
+			depthmap = depthmap,
+			seg_embed = seg_embed,
 		)
 
 		res ={
 			'regressor_dict' : reg_dict,
 			'heatmap' : heatmap,
-			# 'depthmap' : depthmap,
-			# 'silhouette' : silhouette,
+			'depthmap' : depthmap,
+			'silhouette' : silhouette,
 			'pred_pose' : reg_dict['pred_joint']
 		}
 		return res

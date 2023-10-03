@@ -23,7 +23,7 @@ class Regressor(nn.Module):
 			self.bilinear_layer_pose.append(block)
 
 
-		self.fc1 = nn.Linear(heatmapfeat_c + depthmapfeat_c, 1024)
+		self.fc1 = nn.Linear(heatmapfeat_c + depthmapfeat_c+256+128, 1024)
 		self.bn1 = nn.BatchNorm1d(1024,momentum=BN_MOMENTUM)
 		self.relu1 = nn.ReLU()
 		self.drop1 = nn.Dropout()
@@ -68,7 +68,7 @@ class Regressor(nn.Module):
 		)
 
 		
-	def forward(self, heatmap_embed=None, heatmap=None, depthmap_embed=None, depthmap=None):
+	def forward(self, heatmap_embed=None, heatmap=None, depthmap_embed=None, depthmap=None, seg_embed=None):
 		x=heatmap_embed # 256x8x8
 		x2=depthmap_embed # 256x8x8
 		x3=depthmap # 1x256x256
@@ -78,24 +78,27 @@ class Regressor(nn.Module):
 
 		x = self.avgpool(x) #256
 
-		# x2 = self.avgpool(x2) # 256
+		x2 = self.avgpool(x2) # 256
 
-		# x3 = self.conv_block0(x3) #
-		# x3 = self.conv_block1(x3) #
-		# x3 = self.conv_block2(x3) # -> 128
-		# x3 = self.avgpool(x3) 
+		x3 = self.conv_block0(x3) #
+		x3 = self.conv_block1(x3) #
+		x3 = self.conv_block2(x3) # -> 128
+		x3 = self.avgpool(x3) 
 
 		# x4 = self.conv_block1_(x4)
 		# x4 = self.conv_block2_(x4)
 		# x4 = self.avgpool(x4) 
+		if seg_embed is not None:
+			x5 = self.avgpool(seg_embed)
+			seg_e_feat=x5.view(batch_size,-1)
 
 		heatmap_e_feat = x.view(batch_size,-1)
-		# depth_e_feat = x2.view(batch_size,-1)
-		# depthmap_feat = x3.view(batch_size,-1) 
+		depth_e_feat = x2.view(batch_size,-1)
+		depthmap_feat = x3.view(batch_size,-1) 
 		# heatmap_feat = x4.view(batch_size,-1)
 
-		# total_feat = torch.cat([heatmap_e_feat, depth_e_feat, depthmap_feat], 1)
-		total_feat = torch.cat([heatmap_e_feat], 1)
+		total_feat = torch.cat([heatmap_e_feat, seg_e_feat, depth_e_feat, depthmap_feat], 1)
+		# total_feat = torch.cat([heatmap_e_feat], 1)
 		
 		pred_joint = self.fc1(total_feat)
 		pred_joint = self.bn1(pred_joint)
